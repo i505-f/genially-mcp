@@ -71,8 +71,13 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
 
     walkText(root);
 
-    // Deduplicate and filter empty strings, remove very long duplicated substrings
-    const uniqueTexts = [...new Set(texts.filter((t) => t.length > 0))];
+    // Filter out CSS/animation code that Genially injects as visible text nodes.
+    // These appear as raw CSS strings in <div> elements used for animation markup,
+    // not inside <style> tags, so tag-based filtering can't catch them.
+    const CSS_PATTERN = /(?:@keyframes\s|@media\s|\.[\w-]+\s*\{|\w+\s*:\s*\w+[^;]*;[\s\S]*?\}|:hover\s*\{|:focus\s*\{|animation\s*:|transition\s*:|transform\s*:)/;
+    const uniqueTexts = [...new Set(
+      texts.filter((t) => t.length > 0 && !CSS_PATTERN.test(t))
+    )];
 
     // Extract title from first heading-like element
     const headingEl = root.querySelector('h1, h2, h3, [class*="title"], [class*="heading"]');

@@ -21,7 +21,7 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     await waitForPresentation(page, timeoutMs);
 
     const pageTitle = await page.title();
-    const slideCount = await getSlideCount(page);
+    let slideCount = await getSlideCount(page);
     log.info(`Detected ${slideCount} slides, page title: "${pageTitle}"`);
 
     const slides: SlideContent[] = [];
@@ -74,6 +74,18 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
         images,
         popups,
       });
+
+      // Update slideCount if slide text reveals "X of N" (e.g. "Page 3 of 26").
+      // getSlideCount() runs on the cover page which often has no counter, so we
+      // update dynamically as we scrape slides that do show the counter.
+      const slideCountMatch = text.join(' ').match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
+      if (slideCountMatch) {
+        const detected = parseInt(slideCountMatch[1], 10);
+        if (detected > slideCount) {
+          slideCount = detected;
+          log.info(`Updated slide count to ${slideCount} from slide text`);
+        }
+      }
 
       // Stop if we know the total and we've reached it
       if (slideCount > 1 && slides.length >= slideCount) {
