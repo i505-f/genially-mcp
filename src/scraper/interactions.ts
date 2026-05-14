@@ -1,6 +1,7 @@
 import { Page } from 'playwright';
 import { PopupContent, SlideImage } from './types.js';
 import { log } from '../utils/logger.js';
+import { getSlideTextFingerprint } from './navigator.js';
 
 interface ClickTarget {
   description: string;
@@ -10,10 +11,13 @@ interface ClickTarget {
   height: number;
 }
 
+// Labels that identify Genially viewer chrome (navigation / toolbar) — never content hotspots
+const SYSTEM_LABEL = /^(go to the (next|prev)|full.?screen|share|audio|show interactive)/i;
+
 export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
-  return page.evaluate((): ClickTarget[] => {
-    // Only use targeted selectors — querySelectorAll('*') + getComputedStyle on every element
-    // is O(n) over thousands of nodes and takes 5-10s per slide on Genially pages
+  return page.evaluate((systemPattern: string): ClickTarget[] => {
+    const systemRe = new RegExp(systemPattern, 'i');
+
     const interactiveSelectors = [
       // Genially v3/v4 hotspot & button classes
       '[class*="hotspot"]',
@@ -39,29 +43,35 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
       '[class*="marker"]',
       // Elements with explicit onclick handlers injected by Genially's JS
       '[onclick]',
+      // Genially viewer cursor-pointer elements (content hotspots use this class)
+      '[class*="genially-view-cursor-pointer"]',
     ];
 
-    // Deduplicate by rounded position so nested wrappers don't produce duplicate clicks
     const byPosition = new Map<string, ClickTarget>();
 
     for (const sel of interactiveSelectors) {
       document.querySelectorAll(sel).forEach((el) => {
         const rect = el.getBoundingClientRect();
         if (rect.width < 5 || rect.height < 5) return;
-        const key = `${Math.round(rect.x / 5) * 5},${Math.round(rect.y / 5) * 5}`;
-        if (byPosition.has(key)) return;
+
         const desc =
           el.getAttribute('aria-label') ||
           el.getAttribute('title') ||
           el.textContent?.trim().slice(0, 60) ||
           el.className.toString().slice(0, 50) ||
           'interactive element';
+
+        // Skip viewer chrome (next/prev/fullscreen/share/audio/etc.)
+        if (systemRe.test(desc)) return;
+
+        const key = `${Math.round(rect.x / 5) * 5},${Math.round(rect.y / 5) * 5}`;
+        if (byPosition.has(key)) return;
         byPosition.set(key, { description: desc, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
       });
     }
 
     return [...byPosition.values()].slice(0, 20);
-  });
+  }, SYSTEM_LABEL.source);
 }
 
 async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
@@ -78,6 +88,10 @@ async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
       '[class*="overlay"][class*="active"]',
       '[class*="tooltip"][class*="show"]',
       '[class*="tooltip"][class*="visible"]',
+      // Genially-specific panel/content overlay selectors
+      '[class*="genially-view-content"]',
+      '[class*="genially-view-panel"]',
+      '[class*="genially-view-window"]',
     ];
 
     for (const sel of popupSelectors) {
@@ -136,6 +150,19 @@ async function dismissPopup(page: Page): Promise<void> {
   await page.waitForTimeout(400);
 }
 
+async function navigateBack(page: Page): Promise<void> {
+  const prevBtn = page
+    .locator('[aria-label*="previous" i], [aria-label*="anterior" i], [aria-label*="Go to the prev" i]')
+    .first();
+  const visible = await prevBtn.isVisible({ timeout: 300 }).catch(() => false);
+  if (visible) {
+    await prevBtn.click();
+  } else {
+    await page.keyboard.press('ArrowLeft');
+  }
+  await page.waitForTimeout(800);
+}
+
 export async function clickAndCapturePopups(page: Page): Promise<PopupContent[]> {
   const targets = await findClickTargets(page);
   log.info(`Found ${targets.length} interactive targets`);
@@ -147,8 +174,19 @@ export async function clickAndCapturePopups(page: Page): Promise<PopupContent[]>
     const cy = target.y + target.height / 2;
 
     try {
+      const fpBefore = await getSlideTextFingerprint(page);
+
       await page.mouse.click(cx, cy);
       await page.waitForTimeout(450);
+
+      const fpAfter = await getSlideTextFingerprint(page);
+
+      // If the click triggered slide navigation instead of a popup, undo it
+      if (fpAfter !== fpBefore) {
+        log.info(`Click on "${target.description}" triggered navigation, restoring`);
+        await navigateBack(page);
+        continue;
+      }
 
       const popup = await captureOpenPopup(page);
       if (popup && (popup.text.length > 0 || popup.images.length > 0)) {

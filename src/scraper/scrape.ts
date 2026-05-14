@@ -73,8 +73,8 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     log.info(`Detected ${slideCount} slides`);
 
     const slides: SlideContent[] = [];
-    const firstFingerprint = await getSlideTextFingerprint(page);
-    let previousFingerprint = firstFingerprint;
+    const visitedFingerprints = new Set<string>();
+    let previousFingerprint = '';
     const MAX_SLIDES = 200;
 
     for (let slideIndex = 0; slideIndex < MAX_SLIDES; slideIndex++) {
@@ -85,21 +85,22 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
         break;
       }
 
-      if (slideIndex > 0 && currentFingerprint === firstFingerprint) {
+      if (slideIndex > 0 && visitedFingerprints.has(currentFingerprint)) {
         if (slideCount > slides.length) {
           log.info(`Loop at slide ${slideIndex + 1} but ${slideCount} total expected — jumping to dot ${slides.length}`);
           await navigateToSlideByIndex(page, slides.length);
           await page.waitForTimeout(1500);
           const afterJump = await getSlideTextFingerprint(page);
-          if (afterJump !== firstFingerprint && afterJump !== previousFingerprint) {
+          if (!visitedFingerprints.has(afterJump) && afterJump !== previousFingerprint) {
             previousFingerprint = afterJump;
             continue;
           }
         }
-        log.info('Detected loop back to first slide, stopping');
+        log.info('Detected loop (revisiting a previously seen slide), stopping');
         break;
       }
 
+      visitedFingerprints.add(currentFingerprint);
       previousFingerprint = currentFingerprint;
       log.info(`Processing slide ${slideIndex + 1}`);
 
