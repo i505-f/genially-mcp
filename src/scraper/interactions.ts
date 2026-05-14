@@ -12,10 +12,8 @@ interface ClickTarget {
 
 export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
   return page.evaluate((): ClickTarget[] => {
-    const targets: ClickTarget[] = [];
-    const seen = new Set<Element>();
-
-    // Specific Genially interactive element selectors
+    // Only use targeted selectors — querySelectorAll('*') + getComputedStyle on every element
+    // is O(n) over thousands of nodes and takes 5-10s per slide on Genially pages
     const interactiveSelectors = [
       '[class*="hotspot"]',
       '[class*="hot-spot"]',
@@ -30,55 +28,26 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
       '[class*="ping"]',
     ];
 
+    // Deduplicate by rounded position so nested wrappers don't produce duplicate clicks
+    const byPosition = new Map<string, ClickTarget>();
+
     for (const sel of interactiveSelectors) {
       document.querySelectorAll(sel).forEach((el) => {
-        if (seen.has(el)) return;
-        seen.add(el);
         const rect = el.getBoundingClientRect();
         if (rect.width < 5 || rect.height < 5) return;
+        const key = `${Math.round(rect.x / 5) * 5},${Math.round(rect.y / 5) * 5}`;
+        if (byPosition.has(key)) return;
         const desc =
           el.getAttribute('aria-label') ||
           el.getAttribute('title') ||
           el.textContent?.trim().slice(0, 60) ||
           el.className.toString().slice(0, 50) ||
           'interactive element';
-        targets.push({ description: desc, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+        byPosition.set(key, { description: desc, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
       });
     }
 
-    // Also collect cursor:pointer elements that are not navigation
-    document.querySelectorAll('*').forEach((el) => {
-      if (seen.has(el)) return;
-      const style = window.getComputedStyle(el);
-      if (
-        style.cursor !== 'pointer' ||
-        style.display === 'none' ||
-        style.visibility === 'hidden'
-      ) return;
-      if (
-        el.closest('[class*="navigation"]') ||
-        el.closest('[class*="nav-bar"]') ||
-        el.closest('[class*="arrow"]') ||
-        el.closest('[class*="next"]') ||
-        el.closest('[class*="prev"]') ||
-        el.matches('a[href*="//"]') ||
-        el.tagName === 'HTML' ||
-        el.tagName === 'BODY'
-      ) return;
-
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 10 || rect.height < 10) return;
-
-      seen.add(el);
-      const desc =
-        el.getAttribute('aria-label') ||
-        el.getAttribute('title') ||
-        el.textContent?.trim().slice(0, 60) ||
-        'clickable area';
-      targets.push({ description: desc, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
-    });
-
-    return targets;
+    return [...byPosition.values()].slice(0, 20);
   });
 }
 
@@ -166,13 +135,13 @@ export async function clickAndCapturePopups(page: Page): Promise<PopupContent[]>
 
     try {
       await page.mouse.click(cx, cy);
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(450);
 
       const popup = await captureOpenPopup(page);
       if (popup && (popup.text.length > 0 || popup.images.length > 0)) {
         popups.push({ ...popup, triggerDescription: target.description });
         await dismissPopup(page);
-        await page.waitForTimeout(400);
+        await page.waitForTimeout(250);
       }
     } catch (err) {
       log.warn(`Failed to interact with "${target.description}": ${err instanceof Error ? err.message : String(err)}`);
