@@ -1,5 +1,5 @@
 import { launchBrowser, createPage } from './browser.js';
-import { waitForPresentation, getSlideCount, navigateToNextSlide, getSlideTextFingerprint } from './navigator.js';
+import { waitForPresentation, getSlideCount, navigateToNextSlide, navigateToSlideByIndex, getSlideTextFingerprint } from './navigator.js';
 import { extractSlideData } from './extractor.js';
 import { clickAndCapturePopups } from './interactions.js';
 import { ScrapeOptions, PresentationTranscript, SlideContent } from './types.js';
@@ -25,7 +25,6 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     log.info(`Detected ${slideCount} slides, page title: "${pageTitle}"`);
 
     const slides: SlideContent[] = [];
-    let stuckCount = 0;
     const firstFingerprint = await getSlideTextFingerprint(page);
     let previousFingerprint = firstFingerprint;
     const MAX_SLIDES = 200;
@@ -33,21 +32,28 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     for (let slideIndex = 0; slideIndex < MAX_SLIDES; slideIndex++) {
       const currentFingerprint = await getSlideTextFingerprint(page);
 
-      // Detect loop back to first slide (navigation wrapped around)
-      if (slideIndex > 0 && currentFingerprint === firstFingerprint) {
-        log.info('Detected loop back to first slide, stopping');
+      // Detect no progress: content unchanged since last navigation
+      if (slideIndex > 0 && currentFingerprint === previousFingerprint) {
+        log.info(`Slide ${slideIndex + 1}: content unchanged after navigation, stopping`);
         break;
       }
 
-      // Detect no progress: same content as the previous slide twice in a row
-      if (slideIndex > 0 && currentFingerprint === previousFingerprint) {
-        stuckCount++;
-        if (stuckCount >= 2) {
-          log.info('No more slides to navigate, stopping');
-          break;
+      // Detect loop back to first slide (linear section ended, navigation wrapped around)
+      if (slideIndex > 0 && currentFingerprint === firstFingerprint) {
+        // If we know more slides exist (detected via "X of Y" text or dot count),
+        // attempt to jump to the next unvisited slide via dot navigation
+        if (slideCount > slides.length) {
+          log.info(`Loop at slide ${slideIndex + 1} but ${slideCount} total expected — jumping to dot ${slides.length}`);
+          await navigateToSlideByIndex(page, slides.length);
+          await page.waitForTimeout(1500);
+          const afterJump = await getSlideTextFingerprint(page);
+          if (afterJump !== firstFingerprint && afterJump !== previousFingerprint) {
+            previousFingerprint = afterJump;
+            continue;
+          }
         }
-      } else {
-        stuckCount = 0;
+        log.info('Detected loop back to first slide, stopping');
+        break;
       }
 
       previousFingerprint = currentFingerprint;

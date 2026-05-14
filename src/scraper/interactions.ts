@@ -15,17 +15,30 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
     // Only use targeted selectors — querySelectorAll('*') + getComputedStyle on every element
     // is O(n) over thousands of nodes and takes 5-10s per slide on Genially pages
     const interactiveSelectors = [
+      // Genially v3/v4 hotspot & button classes
       '[class*="hotspot"]',
       '[class*="hot-spot"]',
+      '[class*="interactivity-button"]',
+      '[class*="interactive-area"]',
+      '[class*="element-button"]',
+      '[class*="element-interactive"]',
+      '[class*="interactivity"]',
+      // Data attributes used by Genially's renderer
       '[data-animation]',
       '[data-genially-type="button"]',
       '[data-genially-type="hotspot"]',
+      '[data-genially-interactivity]',
+      // Tooltip / popup triggers
       '[class*="tooltip-trigger"]',
       '[class*="popup-trigger"]',
       '[class*="interactive"]',
       '[class*="genially-view-hotspot"]',
+      // Animation marker classes (pulse dots visible on slides)
       '[class*="pulse"]',
       '[class*="ping"]',
+      '[class*="marker"]',
+      // Elements with explicit onclick handlers injected by Genially's JS
+      '[onclick]',
     ];
 
     // Deduplicate by rounded position so nested wrappers don't produce duplicate clicks
