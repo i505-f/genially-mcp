@@ -17,6 +17,7 @@ export async function createPage(browser: Browser): Promise<{ context: BrowserCo
     userAgent:
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     javaScriptEnabled: true,
+    ignoreHTTPSErrors: true,
   });
   await context.route('**/*.{mp4,webm,ogg,avi,mov}', (route) => route.abort());
   const page = await context.newPage();

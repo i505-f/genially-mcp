@@ -1,5 +1,5 @@
 import { launchBrowser, createPage } from './browser.js';
-import { waitForPresentation, getSlideCount, getCurrentSlideIndex, navigateToNextSlide, getSlideTextFingerprint } from './navigator.js';
+import { waitForPresentation, getSlideCount, navigateToNextSlide, getSlideTextFingerprint } from './navigator.js';
 import { extractSlideData } from './extractor.js';
 import { clickAndCapturePopups } from './interactions.js';
 import { ScrapeOptions, PresentationTranscript, SlideContent } from './types.js';
@@ -76,13 +76,6 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
       }
 
       await navigateToNextSlide(page);
-
-      // Re-check index for single-slide decks
-      const currentIdx = await getCurrentSlideIndex(page);
-      if (currentIdx === 0 && slideIndex > 0) {
-        log.info('Navigation wrapped around to slide 0, stopping');
-        break;
-      }
     }
 
     await context.close();
