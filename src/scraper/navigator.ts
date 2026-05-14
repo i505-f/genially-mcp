@@ -82,6 +82,16 @@ export async function getSlideTextFingerprint(page: Page): Promise<string> {
 }
 
 export async function navigateToNextSlide(page: Page): Promise<boolean> {
+  // Dismiss any blocking modal before attempting navigation
+  const modalOpen = await page
+    .locator('.ReactModal__Overlay--after-open')
+    .isVisible({ timeout: 200 })
+    .catch(() => false);
+  if (modalOpen) {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+  }
+
   const nextButtonSelectors = [
     '[class*="next"]:not([class*="navigation-bar"])',
     '[class*="arrow-right"]',

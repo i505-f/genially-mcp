@@ -127,7 +127,19 @@ async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
 }
 
 async function dismissPopup(page: Page): Promise<void> {
+  // Escape is the universal modal close — try it first
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+
+  const stillOpen = await page
+    .locator('.ReactModal__Overlay--after-open')
+    .isVisible({ timeout: 200 })
+    .catch(() => false);
+  if (!stillOpen) return;
+
+  // Modal still open — try close buttons inside it
   const dismissSelectors = [
+    '.ReactModal__Content button',
     '[class*="close"]',
     '[aria-label*="close" i]',
     '[aria-label*="cerrar" i]',
@@ -138,16 +150,13 @@ async function dismissPopup(page: Page): Promise<void> {
 
   for (const sel of dismissSelectors) {
     const btn = page.locator(sel).first();
-    const visible = await btn.isVisible({ timeout: 400 }).catch(() => false);
+    const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
     if (visible) {
       await btn.click();
       await page.waitForTimeout(400);
       return;
     }
   }
-
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(400);
 }
 
 async function navigateBack(page: Page): Promise<void> {
@@ -180,9 +189,14 @@ export async function clickAndCapturePopups(page: Page): Promise<PopupContent[]>
       await page.waitForTimeout(450);
 
       const fpAfter = await getSlideTextFingerprint(page);
+      const modalOpen = await page
+        .locator('.ReactModal__Overlay--after-open')
+        .isVisible({ timeout: 100 })
+        .catch(() => false);
 
-      // If the click triggered slide navigation instead of a popup, undo it
-      if (fpAfter !== fpBefore) {
+      // If fingerprint changed but a modal is open, that's expected (modal text added to DOM)
+      // If fingerprint changed with NO modal, the click triggered slide navigation — undo it
+      if (fpAfter !== fpBefore && !modalOpen) {
         log.info(`Click on "${target.description}" triggered navigation, restoring`);
         await navigateBack(page);
         continue;
