@@ -59,6 +59,8 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
         el.closest('[class*="navigation"]') ||
         el.closest('[class*="nav-bar"]') ||
         el.closest('[class*="arrow"]') ||
+        el.closest('[class*="next"]') ||
+        el.closest('[class*="prev"]') ||
         el.matches('a[href*="//"]') ||
         el.tagName === 'HTML' ||
         el.tagName === 'BODY'
@@ -130,7 +132,7 @@ async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
 
 async function dismissPopup(page: Page): Promise<void> {
   const dismissSelectors = [
-    '[class*="close"]:visible',
+    '[class*="close"]',
     '[aria-label*="close" i]',
     '[aria-label*="cerrar" i]',
     '[class*="modal-close"]',

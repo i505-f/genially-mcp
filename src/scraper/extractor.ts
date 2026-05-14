@@ -43,20 +43,26 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
       // Skip script and style tags
       if (tag === 'script' || tag === 'style' || tag === 'noscript') return;
 
-      // Leaf text nodes or near-leaf elements
-      const children = Array.from(el.childNodes);
-      const isNearLeaf = children.every(
+      // Leaf text nodes or near-leaf elements (only inline children)
+      const childNodes = Array.from(el.childNodes);
+      const inlineTags = new Set(['span', 'strong', 'em', 'b', 'i', 'u', 'a', 'br', 'abbr', 'code', 'mark']);
+      const isNearLeaf = childNodes.every(
         (c) =>
           c.nodeType === Node.TEXT_NODE ||
-          ['span', 'strong', 'em', 'b', 'i', 'u', 'a', 'br'].includes(
-            (c as Element).tagName?.toLowerCase() ?? '',
-          ),
+          inlineTags.has((c as Element).tagName?.toLowerCase() ?? ''),
       );
 
       if (isNearLeaf) {
         const t = el.textContent?.trim();
         if (t && t.length > 0) texts.push(t);
       } else {
+        // Capture any direct text nodes (loose text in a non-leaf container)
+        for (const child of childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) {
+            const t = child.textContent?.trim();
+            if (t && t.length > 0) texts.push(t);
+          }
+        }
         Array.from(el.children).forEach((child) => walkText(child));
       }
     }
