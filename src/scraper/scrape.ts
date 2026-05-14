@@ -1,6 +1,6 @@
 import { launchBrowser, createPage } from './browser.js';
 import { waitForPresentation, getSlideCount, navigateToNextSlide, navigateToSlideByIndex, getSlideTextFingerprint } from './navigator.js';
-import { extractSlideData } from './extractor.js';
+import { extractSlideData, tryExtractFromInitialData } from './extractor.js';
 import { clickAndCapturePopups } from './interactions.js';
 import { ScrapeOptions, PresentationTranscript, SlideContent } from './types.js';
 import { log } from '../utils/logger.js';
@@ -21,8 +21,56 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     await waitForPresentation(page, timeoutMs);
 
     const pageTitle = await page.title();
-    const slideCount = await getSlideCount(page);
-    log.info(`Detected ${slideCount} slides, page title: "${pageTitle}"`);
+
+    // --- Phase 1: Try INITIAL_DATA for fast, complete text extraction ---
+    const initialDataSlides = await tryExtractFromInitialData(page);
+
+    if (initialDataSlides && initialDataSlides.length > 0) {
+      log.info(`INITIAL_DATA: extracted ${initialDataSlides.length} slides, page title: "${pageTitle}"`);
+
+      const slides: SlideContent[] = initialDataSlides.map((s) => ({
+        slideIndex: s.slideIndex,
+        slideTitle: s.text[0] ?? null,
+        text: s.text,
+        images: s.images,
+        popups: [],
+      }));
+
+      // --- Phase 2: Navigate through slides to capture popup content ---
+      if (options.clickInteractive !== false) {
+        const firstFingerprint = await getSlideTextFingerprint(page);
+
+        for (let i = 0; i < slides.length; i++) {
+          const popups = await clickAndCapturePopups(page);
+          slides[i].popups = popups;
+          if (popups.length > 0) log.info(`Slide ${i + 1}: captured ${popups.length} popups`);
+
+          if (i < slides.length - 1) {
+            await navigateToNextSlide(page);
+            const fp = await getSlideTextFingerprint(page);
+            if (fp === firstFingerprint && i > 0) {
+              log.info(`Navigation looped at slide ${i + 1}, stopping popup collection`);
+              break;
+            }
+          }
+        }
+      }
+
+      await context.close();
+      return {
+        url: options.url,
+        title: pageTitle || null,
+        totalSlides: slides.length,
+        scrapedAt: new Date().toISOString(),
+        slides,
+      };
+    }
+
+    // --- Phase 3: Fall back to full navigation-based extraction ---
+    log.info(`INITIAL_DATA not available — falling back to navigation. Page title: "${pageTitle}"`);
+
+    let slideCount = await getSlideCount(page);
+    log.info(`Detected ${slideCount} slides`);
 
     const slides: SlideContent[] = [];
     const firstFingerprint = await getSlideTextFingerprint(page);
@@ -32,16 +80,12 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     for (let slideIndex = 0; slideIndex < MAX_SLIDES; slideIndex++) {
       const currentFingerprint = await getSlideTextFingerprint(page);
 
-      // Detect no progress: content unchanged since last navigation
       if (slideIndex > 0 && currentFingerprint === previousFingerprint) {
         log.info(`Slide ${slideIndex + 1}: content unchanged after navigation, stopping`);
         break;
       }
 
-      // Detect loop back to first slide (linear section ended, navigation wrapped around)
       if (slideIndex > 0 && currentFingerprint === firstFingerprint) {
-        // If we know more slides exist (detected via "X of Y" text or dot count),
-        // attempt to jump to the next unvisited slide via dot navigation
         if (slideCount > slides.length) {
           log.info(`Loop at slide ${slideIndex + 1} but ${slideCount} total expected — jumping to dot ${slides.length}`);
           await navigateToSlideByIndex(page, slides.length);
@@ -57,7 +101,6 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
       }
 
       previousFingerprint = currentFingerprint;
-
       log.info(`Processing slide ${slideIndex + 1}`);
 
       const { text, images, title: slideTitle } = await extractSlideData(page);
@@ -75,7 +118,15 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
         popups,
       });
 
-      // Stop if we know the total and we've reached it
+      const slideCountMatch = text.join(' ').match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
+      if (slideCountMatch) {
+        const detected = parseInt(slideCountMatch[1], 10);
+        if (detected > slideCount) {
+          slideCount = detected;
+          log.info(`Updated slide count to ${slideCount} from slide text`);
+        }
+      }
+
       if (slideCount > 1 && slides.length >= slideCount) {
         log.info(`Reached expected slide count (${slideCount}), stopping`);
         break;
