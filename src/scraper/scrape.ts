@@ -25,28 +25,29 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     log.info(`Detected ${slideCount} slides, page title: "${pageTitle}"`);
 
     const slides: SlideContent[] = [];
-    let consecutiveNoProgress = 0;
-    let previousFingerprint = '';
+    let stuckCount = 0;
+    const firstFingerprint = await getSlideTextFingerprint(page);
+    let previousFingerprint = firstFingerprint;
     const MAX_SLIDES = 200;
 
     for (let slideIndex = 0; slideIndex < MAX_SLIDES; slideIndex++) {
       const currentFingerprint = await getSlideTextFingerprint(page);
 
-      // Detect if we've looped back to the start (same content as slide 0)
-      if (slideIndex > 0 && slides.length > 0 && currentFingerprint === slides[0]?.text.join('').slice(0, 500)) {
+      // Detect loop back to first slide (navigation wrapped around)
+      if (slideIndex > 0 && currentFingerprint === firstFingerprint) {
         log.info('Detected loop back to first slide, stopping');
         break;
       }
 
-      // Detect no progress (same content as previous slide)
+      // Detect no progress: same content as the previous slide twice in a row
       if (slideIndex > 0 && currentFingerprint === previousFingerprint) {
-        consecutiveNoProgress++;
-        if (consecutiveNoProgress >= 2) {
+        stuckCount++;
+        if (stuckCount >= 2) {
           log.info('No more slides to navigate, stopping');
           break;
         }
       } else {
-        consecutiveNoProgress = 0;
+        stuckCount = 0;
       }
 
       previousFingerprint = currentFingerprint;
@@ -74,14 +75,7 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
         break;
       }
 
-      const moved = await navigateToNextSlide(page);
-      if (!moved) {
-        consecutiveNoProgress++;
-        if (consecutiveNoProgress >= 2) {
-          log.info('Navigation returned no movement, stopping');
-          break;
-        }
-      }
+      await navigateToNextSlide(page);
 
       // Re-check index for single-slide decks
       const currentIdx = await getCurrentSlideIndex(page);
