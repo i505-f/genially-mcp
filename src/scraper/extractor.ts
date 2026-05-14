@@ -7,6 +7,67 @@ export interface ExtractedSlideData {
   title: string | null;
 }
 
+export interface InitialDataSlide {
+  slideIndex: number;
+  text: string[];
+  images: SlideImage[];
+}
+
+export async function tryExtractFromInitialData(page: Page): Promise<InitialDataSlide[] | null> {
+  return page.evaluate((): { slideIndex: number; text: string[]; images: { src: string; alt: string }[] }[] | null => {
+    const w = window as any;
+    const raw: unknown[] | undefined = w.INITIAL_DATA?.socialViewProps?.rawTranscriptions;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+
+    return raw.map((item: unknown, idx: number) => {
+      const html =
+        typeof item === 'string'
+          ? item
+          : typeof (item as any)?.content === 'string'
+            ? (item as any).content
+            : '';
+      if (!html) return { slideIndex: idx, text: [], images: [] };
+
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      tmp.querySelectorAll('script, style').forEach((el) => el.remove());
+
+      const texts: string[] = [];
+      const seen = new Set<string>();
+      const inlineTags = new Set(['span', 'strong', 'em', 'b', 'i', 'u', 'a', 'br', 'abbr', 'code', 'mark', 'sub', 'sup']);
+
+      function walkNodes(el: Element): void {
+        const hasBlockChild = Array.from(el.children).some(
+          (c) => !inlineTags.has(c.tagName.toLowerCase()),
+        );
+        if (!hasBlockChild) {
+          const t = el.textContent?.trim() ?? '';
+          if (t.length > 0 && !seen.has(t)) {
+            seen.add(t);
+            texts.push(t);
+          }
+        } else {
+          Array.from(el.children).forEach((c) => walkNodes(c));
+        }
+      }
+
+      walkNodes(tmp);
+
+      const images: { src: string; alt: string }[] = [];
+      const imgSrcs = new Set<string>();
+      tmp.querySelectorAll('img').forEach((img) => {
+        const src = img.getAttribute('src') ?? '';
+        if (src && !src.startsWith('data:') && !imgSrcs.has(src)) {
+          imgSrcs.add(src);
+          images.push({ src, alt: (img as HTMLImageElement).alt ?? '' });
+        }
+      });
+
+      return { slideIndex: idx, text: texts, images };
+    });
+  });
+}
+
 export async function extractSlideData(page: Page): Promise<ExtractedSlideData> {
   await page.waitForTimeout(400);
 
