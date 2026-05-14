@@ -28,10 +28,15 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
 
     // Walk visible elements extracting text
     function walkText(el: Element): void {
+      const tag = el.tagName.toLowerCase();
+
+      // Check tag name FIRST — <style> elements can have display:block when injected by
+      // CSS-in-JS frameworks (styled-components, emotion) used by Genially's React app,
+      // which would make them pass the visibility check below and leak raw CSS into text[]
+      if (tag === 'script' || tag === 'style' || tag === 'noscript' || tag === 'head') return;
+
       const style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
-
-      const tag = el.tagName.toLowerCase();
 
       // SVG text elements
       if (tag === 'text' || tag === 'tspan') {
@@ -39,9 +44,6 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
         if (t && t.length > 0) texts.push(t);
         return;
       }
-
-      // Skip script and style tags
-      if (tag === 'script' || tag === 'style' || tag === 'noscript') return;
 
       // Leaf text nodes or near-leaf elements (only inline children)
       const childNodes = Array.from(el.childNodes);

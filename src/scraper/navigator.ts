@@ -38,6 +38,14 @@ export async function getSlideCount(page: Page): Promise<number> {
       const items = document.querySelectorAll(sel);
       if (items.length > 0) return items.length;
     }
+    // Fallback: parse "X of N" / "X de N" / "X / N" text visible on the page
+    // (e.g. Genially shows "Page 3 of 26" in the slide footer)
+    const bodyText = document.body.innerText ?? '';
+    const m = bodyText.match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > 1) return n;
+    }
     return 0;
   });
   return Math.max(count, 1);
