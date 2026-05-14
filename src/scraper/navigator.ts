@@ -62,10 +62,15 @@ export async function getCurrentSlideIndex(page: Page): Promise<number> {
 }
 
 export async function getSlideTextFingerprint(page: Page): Promise<string> {
-  const text = await page.evaluate(() => {
-    return (document.body.innerText ?? '').slice(0, 500);
+  return page.evaluate(() => {
+    // Use a hash of the full body text so persistent headers don't cause false loop detection
+    const text = document.body.innerText ?? '';
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) >>> 0;
+    }
+    return `${hash}:${text.length}`;
   });
-  return text;
 }
 
 export async function navigateToNextSlide(page: Page): Promise<boolean> {
