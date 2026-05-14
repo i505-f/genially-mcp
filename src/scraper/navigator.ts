@@ -2,17 +2,17 @@ import { Page } from 'playwright';
 import { log } from '../utils/logger.js';
 
 export async function waitForPresentation(page: Page, timeoutMs: number): Promise<void> {
-  await page.waitForLoadState('networkidle', { timeout: timeoutMs });
+  // 'load' is more reliable than 'networkidle' — Genially has continuous analytics traffic
+  await page.waitForLoadState('load', { timeout: timeoutMs });
   await page
     .waitForSelector(
       '[class*="slide"], [class*="genially"], section[data-genially-id], .genially-view-window',
-      { timeout: timeoutMs, state: 'attached' },
+      { timeout: Math.min(timeoutMs, 15000), state: 'attached' },
     )
     .catch(() => {
-      // Fallback: just wait for load if no specific selector is found
       log.warn('No specific Genially slide container found, continuing with full page');
     });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2000);
 }
 
 export async function getSlideCount(page: Page): Promise<number> {
@@ -82,28 +82,29 @@ export async function navigateToNextSlide(page: Page): Promise<boolean> {
     '[title*="next" i]',
   ];
 
-  const indexBefore = await getCurrentSlideIndex(page);
   const fingerprintBefore = await getSlideTextFingerprint(page);
 
+  // Click at most ONE button — iterating all selectors caused double-navigation
+  // when the first click succeeded but the 900ms transition hadn't finished yet
+  let buttonClicked = false;
   for (const sel of nextButtonSelectors) {
     const btn = page.locator(sel).first();
     const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
     if (visible) {
       await btn.click();
-      await page.waitForTimeout(900);
-      const fingerprintAfter = await getSlideTextFingerprint(page);
-      if (fingerprintAfter !== fingerprintBefore) return true;
+      buttonClicked = true;
+      break;
     }
   }
 
-  // Fallback: ArrowRight key
-  await page.keyboard.press('ArrowRight');
-  await page.waitForTimeout(900);
+  // Only use ArrowRight if no button was found at all
+  if (!buttonClicked) {
+    await page.keyboard.press('ArrowRight');
+  }
 
-  const indexAfter = await getCurrentSlideIndex(page);
+  await page.waitForTimeout(1200);
   const fingerprintAfter = await getSlideTextFingerprint(page);
-
-  return indexAfter !== indexBefore || fingerprintAfter !== fingerprintBefore;
+  return fingerprintAfter !== fingerprintBefore;
 }
 
 export async function navigateToSlideByIndex(page: Page, index: number): Promise<void> {
