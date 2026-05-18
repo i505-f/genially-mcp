@@ -1,5 +1,5 @@
 import { Page } from 'playwright';
-import { SlideImage } from './types.js';
+import { SlideImage, PopupContent } from './types.js';
 
 export interface ExtractedSlideData {
   text: string[];
@@ -166,5 +166,73 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
     );
 
     return { text: uniqueTexts, images: uniqueImages, title };
+  });
+}
+
+// Genially pre-renders interactive/popup content as `.genially-animated-wrapper`
+// elements that are present in the DOM but visually hidden (opacity 0) until the
+// user clicks a trigger. The text is therefore already available WITHOUT clicking
+// anything — which avoids the modal-blocks-navigation problem entirely. This reads
+// the currently-hidden wrappers (the emergent content); visible ones are left to
+// extractSlideData so the base slide text isn't duplicated.
+export async function extractHiddenContent(page: Page): Promise<PopupContent[]> {
+  return page.evaluate((): { triggerDescription: string; text: string[]; images: SlideImage[] }[] => {
+    const CHROME =
+      /genially-view-(icon|cursor-pointer|navigation|footer|header|background_audio|toolbar)|StickyBanner/;
+
+    const isHidden = (el: Element): boolean => {
+      const cs = window.getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return true;
+      if (parseFloat(cs.opacity || '1') <= 0.05) return true;
+      const m = cs.transform.match(/matrix\(([^)]+)\)/);
+      if (m) {
+        const parts = m[1].split(',').map((n) => parseFloat(n));
+        // matrix(a,b,c,d,e,f): scaleX≈a, scaleY≈d — scaled to ~0 means hidden
+        if (Math.abs(parts[0]) < 0.05 && Math.abs(parts[3]) < 0.05) return true;
+      }
+      return false;
+    };
+
+    const popups: { triggerDescription: string; text: string[]; images: SlideImage[] }[] = [];
+    const seen = new Set<string>();
+
+    document.querySelectorAll('.genially-animated-wrapper').forEach((w) => {
+      const cls = w.className ? w.className.toString() : '';
+      if (CHROME.test(cls)) return;
+
+      // Emergent = the wrapper (or its content item) is currently hidden
+      const inner = w.querySelector('.genially-view-text, .genially-view-item');
+      const hidden = isHidden(w) || (inner !== null && isHidden(inner));
+      if (!hidden) return;
+
+      const raw = (w as HTMLElement).textContent ?? '';
+      const lines = [
+        ...new Set(
+          raw
+            .split('\n')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 1),
+        ),
+      ];
+      if (lines.length === 0) return;
+
+      const key = lines.join('|');
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      const images: SlideImage[] = [];
+      w.querySelectorAll('img').forEach((img) => {
+        const src = img.getAttribute('src') ?? '';
+        if (src && !src.startsWith('data:')) images.push({ src, alt: (img as HTMLImageElement).alt || '' });
+      });
+
+      popups.push({
+        triggerDescription: w.getAttribute('data-noddus-item-name') || 'revealed content',
+        text: lines,
+        images: images.filter((img, i, arr) => arr.findIndex((x) => x.src === img.src) === i),
+      });
+    });
+
+    return popups;
   });
 }

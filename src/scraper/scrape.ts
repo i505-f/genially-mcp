@@ -1,7 +1,6 @@
 import { launchBrowser, createPage } from './browser.js';
 import { waitForPresentation, getSlideCount, navigateToNextSlide, getSlideTextFingerprint, getPageInfo } from './navigator.js';
-import { extractSlideData, tryExtractFromInitialData } from './extractor.js';
-import { clickAndCapturePopups } from './interactions.js';
+import { extractSlideData, tryExtractFromInitialData, extractHiddenContent } from './extractor.js';
 import { ScrapeOptions, PresentationTranscript, SlideContent, SlideImage, PopupContent } from './types.js';
 import { log } from '../utils/logger.js';
 
@@ -41,15 +40,15 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
         const firstFingerprint = await getSlideTextFingerprint(page);
 
         for (let i = 0; i < slides.length; i++) {
-          const popups = await clickAndCapturePopups(page);
+          const popups = await extractHiddenContent(page).catch(() => []);
           slides[i].popups = popups;
-          if (popups.length > 0) log.info(`Slide ${i + 1}: captured ${popups.length} popups`);
+          if (popups.length > 0) log.info(`Slide ${i + 1}: captured ${popups.length} hidden/emergent blocks`);
 
           if (i < slides.length - 1) {
             await navigateToNextSlide(page);
             const fp = await getSlideTextFingerprint(page);
             if (fp === firstFingerprint && i > 0) {
-              log.info(`Navigation looped at slide ${i + 1}, stopping popup collection`);
+              log.info(`Navigation looped at slide ${i + 1}, stopping`);
               break;
             }
           }
@@ -127,9 +126,9 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
       let popups: PopupContent[] = [];
       if (options.clickInteractive !== false) {
         try {
-          popups = await clickAndCapturePopups(page);
+          popups = await extractHiddenContent(page);
         } catch (e) {
-          log.warn(`clickAndCapturePopups failed on slide ${slideIndex + 1}: ${e}`);
+          log.warn(`extractHiddenContent failed on slide ${slideIndex + 1}: ${e}`);
         }
       }
 
