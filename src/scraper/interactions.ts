@@ -1,7 +1,7 @@
 import { Page } from 'playwright';
 import { PopupContent, SlideImage } from './types.js';
 import { log } from '../utils/logger.js';
-import { getSlideTextFingerprint } from './navigator.js';
+import { getSlideTextFingerprint, isModalOpen, dismissAnyModal } from './navigator.js';
 
 interface ClickTarget {
   description: string;
@@ -67,11 +67,6 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
   }, SYSTEM_LABEL.source);
 }
 
-async function isModalOpen(page: Page): Promise<boolean> {
-  // Check .ReactModal__Overlay (without --after-open) so we catch it during animations too
-  return page.locator('.ReactModal__Overlay').isVisible({ timeout: 300 }).catch(() => false);
-}
-
 async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
   return page.evaluate((): { triggerDescription: string; text: string[]; images: SlideImage[] } | null => {
     const popupSelectors = [
@@ -90,67 +85,44 @@ async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
       '[class*="genially-view-content"]',
       '[class*="genially-view-panel"]',
       '[class*="genially-view-window"]',
+      '.ReactModal__Overlay',
     ];
 
     for (const sel of popupSelectors) {
-      const el = document.querySelector(sel);
+      const el = document.querySelector(sel) as HTMLElement | null;
       if (!el) continue;
       const style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
 
-      const texts: string[] = [];
+      // innerText respects rendering/visibility and handles Genially's obfuscated nested
+      // DOM far better than per-tag traversal (which missed most popup content)
+      const raw = el.innerText ?? '';
+      const text = [
+        ...new Set(
+          raw
+            .split('\n')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 1),
+        ),
+      ];
+
       const images: SlideImage[] = [];
-
-      el.querySelectorAll('p, h1, h2, h3, h4, span, li, div, text, tspan').forEach((child) => {
-        const cs = window.getComputedStyle(child as Element);
-        if (cs.display === 'none' || cs.visibility === 'hidden') return;
-        const t = child.textContent?.trim();
-        if (t && t.length > 1) texts.push(t);
-      });
-
       el.querySelectorAll('img').forEach((img) => {
         if (img.src && !img.src.startsWith('data:')) {
           images.push({ src: img.src, alt: img.alt || '' });
         }
       });
+      const uniqueImages = images.filter(
+        (img, idx, arr) => arr.findIndex((i) => i.src === img.src) === idx,
+      );
 
-      return {
-        triggerDescription: '',
-        text: [...new Set(texts.filter((t) => t.length > 0))],
-        images: images.filter((img, idx, arr) => arr.findIndex((i) => i.src === img.src) === idx),
-      };
+      if (text.length === 0 && uniqueImages.length === 0) continue;
+      return { triggerDescription: '', text, images: uniqueImages };
     }
     return null;
   });
 }
 
-async function dismissPopup(page: Page): Promise<void> {
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(400);
-
-  if (!(await isModalOpen(page))) return;
-
-  // Escape didn't close it — try explicit close buttons inside the modal
-  const dismissSelectors = [
-    '.ReactModal__Content button',
-    '[class*="close"]',
-    '[aria-label*="close" i]',
-    '[aria-label*="cerrar" i]',
-    '[class*="modal-close"]',
-    '[class*="popup-close"]',
-    'button[class*="dismiss"]',
-  ];
-
-  for (const sel of dismissSelectors) {
-    const btn = page.locator(sel).first();
-    const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
-    if (visible) {
-      await btn.click();
-      await page.waitForTimeout(400);
-      return;
-    }
-  }
-}
 
 async function navigateBack(page: Page): Promise<void> {
   const prevBtn = page
@@ -200,8 +172,12 @@ export async function clickAndCapturePopups(page: Page): Promise<PopupContent[]>
       // Always dismiss — even if capture found nothing, the modal must be closed
       // so it doesn't block subsequent navigation
       if (modalNowOpen || fpAfter !== fpBefore) {
-        await dismissPopup(page);
+        await dismissAnyModal(page);
         await page.waitForTimeout(300);
+        // If a stray navigation also happened, undo it so the slide index stays aligned
+        if ((await getSlideTextFingerprint(page)) !== fpBefore && !(await isModalOpen(page))) {
+          await navigateBack(page);
+        }
       }
     } catch (err) {
       log.warn(`Failed to interact with "${target.description}": ${err instanceof Error ? err.message : String(err)}`);

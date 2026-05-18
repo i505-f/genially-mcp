@@ -169,5 +169,82 @@ console.log('\n── BUTTONS / ROLE=BUTTON (current slide, up to 30) ──');
 if (cursors.length === 0) console.log('  none found');
 cursors.forEach((el, i) => console.log(`  [${i}] ${el.tag} class="${el.class}" text="${el.text}" aria="${el.ariaLabel}"`));
 
+// ── 6. PROBE A REAL POPUP: reload, advance to a slide with a hotspot, click it ──
+console.log('\n── POPUP PROBE ──');
+await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+await page.waitForTimeout(3500);
+
+// Advance a few slides to reach interactive content (e.g. slide ~4 with "+Info")
+for (let i = 0; i < 3; i++) {
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(1300);
+}
+
+const SYSTEM = /^(go to the (next|prev)|full.?screen|share|audio|show interactive)/i;
+const target = await page.evaluate((sysSrc) => {
+  const sysRe = new RegExp(sysSrc, 'i');
+  const sels = [
+    '[class*="hotspot"]', '[class*="interactivity"]', '[data-animation]',
+    '[class*="interactive"]', '[onclick]', '[class*="genially-view-cursor-pointer"]',
+  ];
+  for (const sel of sels) {
+    for (const el of document.querySelectorAll(sel)) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 5 || r.height < 5) continue;
+      const desc = el.getAttribute('aria-label') || el.textContent?.trim().slice(0, 40) || el.className.toString().slice(0, 40);
+      if (sysRe.test(desc)) continue;
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2, desc };
+    }
+  }
+  return null;
+}, SYSTEM.source);
+
+if (!target) {
+  console.log('  no clickable hotspot found on this slide');
+} else {
+  console.log(`  clicking target: "${target.desc}" at (${Math.round(target.x)}, ${Math.round(target.y)})`);
+  await page.mouse.click(target.x, target.y);
+  await page.waitForTimeout(1500);
+
+  const probe = await page.evaluate(() => {
+    const overlay = document.querySelector('.ReactModal__Overlay');
+    const content = document.querySelector('.ReactModal__Content');
+    const el = content || overlay;
+    // Highest z-index element that is large and visible (potential popup container)
+    let topZ = null, topZVal = -1;
+    document.querySelectorAll('body *').forEach((n) => {
+      const cs = getComputedStyle(n);
+      const z = parseInt(cs.zIndex, 10);
+      const r = n.getBoundingClientRect();
+      if (!isNaN(z) && z > topZVal && r.width > 150 && r.height > 100 && cs.display !== 'none' && cs.visibility !== 'hidden') {
+        topZVal = z; topZ = n;
+      }
+    });
+    return {
+      reactModalOverlay: !!overlay,
+      reactModalContent: !!content,
+      modalOuterHTML: el ? el.outerHTML.slice(0, 2500) : null,
+      modalInnerText: el ? el.innerText.slice(0, 1500) : null,
+      topZIndex: topZVal,
+      topZClass: topZ ? topZ.className.toString().slice(0, 120) : null,
+      topZTag: topZ ? topZ.tagName : null,
+      topZInnerText: topZ ? topZ.innerText.slice(0, 1500) : null,
+      topZOuterHTMLHead: topZ ? topZ.outerHTML.slice(0, 1200) : null,
+    };
+  });
+  console.log(`  .ReactModal__Overlay present: ${probe.reactModalOverlay}`);
+  console.log(`  .ReactModal__Content present: ${probe.reactModalContent}`);
+  console.log(`  highest z-index overlay: z=${probe.topZIndex} <${probe.topZTag}> class="${probe.topZClass}"`);
+  console.log('\n  --- modal innerText ---\n' + (probe.modalInnerText ?? '(none)'));
+  console.log('\n  --- modal outerHTML (2.5k) ---\n' + (probe.modalOuterHTML ?? '(none)'));
+  console.log('\n  --- top-z innerText ---\n' + (probe.topZInnerText ?? '(none)'));
+  console.log('\n  --- top-z outerHTML head ---\n' + (probe.topZOuterHTMLHead ?? '(none)'));
+
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(800);
+  const stillOpen = await page.locator('.ReactModal__Overlay').isVisible({ timeout: 300 }).catch(() => false);
+  console.log(`\n  Escape closed the modal? ${!stillOpen} (overlay still visible: ${stillOpen})`);
+}
+
 await browser.close();
 console.log('\n=== DONE ===\n');

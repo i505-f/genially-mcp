@@ -69,6 +69,62 @@ export async function getCurrentSlideIndex(page: Page): Promise<number> {
   });
 }
 
+export async function getPageInfo(page: Page): Promise<{ current: number | null; total: number | null }> {
+  return page.evaluate(() => {
+    const bodyText = document.body.innerText ?? '';
+    const m = bodyText.match(/\b(\d+)\s*(?:of|de|\/)\s*(\d+)\b/i);
+    if (m) {
+      const current = parseInt(m[1], 10);
+      const total = parseInt(m[2], 10);
+      if (total >= current && total > 0) return { current, total };
+    }
+    return { current: null, total: null };
+  });
+}
+
+const MODAL_OVERLAY = '.ReactModal__Overlay';
+
+export async function isModalOpen(page: Page): Promise<boolean> {
+  return page.locator(MODAL_OVERLAY).first().isVisible({ timeout: 250 }).catch(() => false);
+}
+
+// Genially modals are often configured with shouldCloseOnEsc=false and their close
+// control is a <div class="genially-view-cursor-pointer"> (not a <button>), so a
+// single Escape press is not enough. Try Escape, then an explicit close control,
+// then a backdrop click (shouldCloseOnOverlayClick), repeating a few times.
+export async function dismissAnyModal(page: Page): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!(await isModalOpen(page))) return;
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(350);
+    if (!(await isModalOpen(page))) return;
+
+    const closeSelectors = [
+      `${MODAL_OVERLAY} [aria-label*="close" i]`,
+      `${MODAL_OVERLAY} [aria-label*="cerrar" i]`,
+      `${MODAL_OVERLAY} [class*="close"]`,
+      '.ReactModal__Content button',
+    ];
+    for (const sel of closeSelectors) {
+      const btn = page.locator(sel).first();
+      if (await btn.isVisible({ timeout: 150 }).catch(() => false)) {
+        await btn.click({ timeout: 1000 }).catch(() => {});
+        await page.waitForTimeout(350);
+        break;
+      }
+    }
+    if (!(await isModalOpen(page))) return;
+
+    // Backdrop click at a top-left corner, away from the modal content
+    const box = await page.locator(MODAL_OVERLAY).first().boundingBox().catch(() => null);
+    if (box) {
+      await page.mouse.click(box.x + 4, box.y + 4).catch(() => {});
+      await page.waitForTimeout(350);
+    }
+  }
+}
+
 export async function getSlideTextFingerprint(page: Page): Promise<string> {
   return page.evaluate(() => {
     // Use a hash of the full body text so persistent headers don't cause false loop detection
@@ -83,14 +139,7 @@ export async function getSlideTextFingerprint(page: Page): Promise<string> {
 
 export async function navigateToNextSlide(page: Page): Promise<boolean> {
   // Dismiss any blocking modal before attempting navigation
-  const modalOpen = await page
-    .locator('.ReactModal__Overlay')
-    .isVisible({ timeout: 200 })
-    .catch(() => false);
-  if (modalOpen) {
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
-  }
+  await dismissAnyModal(page);
 
   const nextButtonSelectors = [
     '[class*="next"]:not([class*="navigation-bar"])',
@@ -109,13 +158,17 @@ export async function navigateToNextSlide(page: Page): Promise<boolean> {
     const btn = page.locator(sel).first();
     const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
     if (visible) {
-      await btn.click();
-      buttonClicked = true;
+      // Short timeout so a still-blocking overlay doesn't hang 30s; fall back to keyboard
+      const ok = await btn
+        .click({ timeout: 4000 })
+        .then(() => true)
+        .catch(() => false);
+      buttonClicked = ok;
       break;
     }
   }
 
-  // Only use ArrowRight if no button was found at all
+  // Use ArrowRight if no button was found, or the button click was blocked
   if (!buttonClicked) {
     await page.keyboard.press('ArrowRight');
   }

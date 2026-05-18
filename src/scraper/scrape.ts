@@ -1,8 +1,8 @@
 import { launchBrowser, createPage } from './browser.js';
-import { waitForPresentation, getSlideCount, navigateToNextSlide, navigateToSlideByIndex, getSlideTextFingerprint } from './navigator.js';
+import { waitForPresentation, getSlideCount, navigateToNextSlide, getSlideTextFingerprint, getPageInfo } from './navigator.js';
 import { extractSlideData, tryExtractFromInitialData } from './extractor.js';
 import { clickAndCapturePopups } from './interactions.js';
-import { ScrapeOptions, PresentationTranscript, SlideContent } from './types.js';
+import { ScrapeOptions, PresentationTranscript, SlideContent, SlideImage, PopupContent } from './types.js';
 import { log } from '../utils/logger.js';
 
 export async function scrapePresentation(options: ScrapeOptions): Promise<PresentationTranscript> {
@@ -73,51 +73,67 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
     log.info(`Detected ${slideCount} slides`);
 
     const slides: SlideContent[] = [];
-    const visitedFingerprints = new Set<string>();
     let previousFingerprint = '';
+    let firstFingerprint = '';
+    let maxPageSeen = 0;
     const MAX_SLIDES = 200;
 
     for (let slideIndex = 0; slideIndex < MAX_SLIDES; slideIndex++) {
-      const currentFingerprint = await getSlideTextFingerprint(page);
+      let currentFingerprint: string;
+      try {
+        currentFingerprint = await getSlideTextFingerprint(page);
+      } catch (e) {
+        log.warn(`Could not read slide ${slideIndex + 1}, stopping with ${slides.length} slides: ${e}`);
+        break;
+      }
+      if (slideIndex === 0) firstFingerprint = currentFingerprint;
 
+      // No progress: navigation didn't change the slide content
       if (slideIndex > 0 && currentFingerprint === previousFingerprint) {
         log.info(`Slide ${slideIndex + 1}: content unchanged after navigation, stopping`);
         break;
       }
 
-      if (slideIndex > 0 && visitedFingerprints.has(currentFingerprint)) {
-        if (slideCount > slides.length) {
-          log.info(`Loop at slide ${slideIndex + 1} but ${slideCount} total expected — jumping to dot ${slides.length}`);
-          await navigateToSlideByIndex(page, slides.length);
-          await page.waitForTimeout(1500);
-          const afterJump = await getSlideTextFingerprint(page);
-          if (!visitedFingerprints.has(afterJump) && afterJump !== previousFingerprint) {
-            previousFingerprint = afterJump;
-            continue;
-          }
+      const { current, total } = await getPageInfo(page).catch(() => ({ current: null, total: null }));
+
+      if (current != null && total != null) {
+        // Page counter is the reliable termination signal
+        if (total > slideCount) slideCount = total;
+        if (slideIndex > 0 && current <= maxPageSeen) {
+          log.info(`Page counter went ${current}/${total} (max seen ${maxPageSeen}) — wrapped around, stopping`);
+          break;
         }
-        log.info('Detected loop (revisiting a previously seen slide), stopping');
+        maxPageSeen = Math.max(maxPageSeen, current);
+      } else if (slideIndex > 0 && currentFingerprint === firstFingerprint) {
+        // No counter available — fall back to true wrap-to-first detection
+        log.info('Looped back to first slide (no page counter), stopping');
         break;
       }
 
-      visitedFingerprints.add(currentFingerprint);
       previousFingerprint = currentFingerprint;
-      log.info(`Processing slide ${slideIndex + 1}`);
+      log.info(
+        `Processing slide ${slideIndex + 1}${current != null ? ` (page ${current} of ${total})` : ''}`,
+      );
 
-      const { text, images, title: slideTitle } = await extractSlideData(page);
+      let text: string[] = [];
+      let images: SlideImage[] = [];
+      let slideTitle: string | null = null;
+      try {
+        ({ text, images, title: slideTitle } = await extractSlideData(page));
+      } catch (e) {
+        log.warn(`extractSlideData failed on slide ${slideIndex + 1}: ${e}`);
+      }
 
-      const popups =
-        options.clickInteractive !== false
-          ? await clickAndCapturePopups(page)
-          : [];
+      let popups: PopupContent[] = [];
+      if (options.clickInteractive !== false) {
+        try {
+          popups = await clickAndCapturePopups(page);
+        } catch (e) {
+          log.warn(`clickAndCapturePopups failed on slide ${slideIndex + 1}: ${e}`);
+        }
+      }
 
-      slides.push({
-        slideIndex,
-        slideTitle,
-        text,
-        images,
-        popups,
-      });
+      slides.push({ slideIndex, slideTitle, text, images, popups });
 
       const slideCountMatch = text.join(' ').match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
       if (slideCountMatch) {
@@ -129,14 +145,20 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
       }
 
       if (slideCount > 1 && slides.length >= slideCount) {
-        log.info(`Reached expected slide count (${slideCount}), stopping`);
+        log.info(`Collected all ${slideCount} slides, stopping`);
         break;
       }
 
-      await navigateToNextSlide(page);
+      // A navigation failure must never discard slides already collected
+      try {
+        await navigateToNextSlide(page);
+      } catch (e) {
+        log.warn(`Navigation failed at slide ${slideIndex + 1}, returning ${slides.length} slides: ${e}`);
+        break;
+      }
     }
 
-    await context.close();
+    await context.close().catch(() => {});
 
     return {
       url: options.url,
