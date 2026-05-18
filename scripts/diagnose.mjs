@@ -245,72 +245,116 @@ for (let s = 1; s <= 6; s++) {
     console.log(`    [${i}] <${d.tag}> "${d.txt || d.aria}" cls="${d.cls}" attrs=[${d.attrs}] @${d.pos}`),
   );
 
-  // On the first slide that has a content element, click the real
-  // genially-view-item (same logic the scraper now uses) and dump the popup
-  if (dump.length > 0 && s >= 2) {
-    const t = await page.evaluate(
-      (sysSrc) => {
-        const sysRe = new RegExp(sysSrc, 'i');
-        const added = [];
-        for (const el of document.querySelectorAll('[class*="genially-view-item"], [data-genially-id]')) {
-          const cs = getComputedStyle(el);
-          if (cs.cursor !== 'pointer') continue;
-          const r = el.getBoundingClientRect();
-          if (r.width < 8 || r.height < 8 || r.width > 1400) continue;
-          if (added.some((a) => a.contains(el))) continue;
-          const desc = el.getAttribute('aria-label') || (el.textContent || '').trim().slice(0, 40);
-          if (sysRe.test(desc)) continue;
-          added.push(el);
-          if (desc && desc.length > 1) return { x: r.x + r.width / 2, y: r.y + r.height / 2, desc };
+  // Click EVERY clickable genially-view-item on this slide; after each click look
+  // for a REAL popup: a visible container with text that was NOT there before,
+  // excluding the canvasInteractivityEffect ripple layer and viewer chrome.
+  const targets = await page.evaluate(
+    (sysSrc) => {
+      const sysRe = new RegExp(sysSrc, 'i');
+      const added = [];
+      const out = [];
+      for (const el of document.querySelectorAll('[class*="genially-view-item"], [data-genially-id]')) {
+        const cs = getComputedStyle(el);
+        if (cs.cursor !== 'pointer') continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8 || r.width > 1400) continue;
+        if (added.some((a) => a.contains(el))) continue;
+        const desc = el.getAttribute('aria-label') || (el.textContent || '').trim().slice(0, 40) || 'item';
+        if (sysRe.test(desc)) continue;
+        added.push(el);
+        out.push({ x: r.x + r.width / 2, y: r.y + r.height / 2, desc });
+      }
+      return out.slice(0, 10);
+    },
+    SYSTEM.source,
+  );
+
+  for (const t of targets) {
+    const before = await page.evaluate(() => document.body.innerText.length);
+    await page.mouse.click(t.x, t.y);
+    await page.waitForTimeout(1600);
+
+    const found = await page.evaluate((beforeLen) => {
+      const CHROME = /genially-view-(icon|cursor-pointer|navigation|footer|header|background_audio|toolbar)|StickyBanner|sc-/;
+      let best = null;
+      let bestArea = 0;
+      document.querySelectorAll('body *').forEach((n) => {
+        if (n.tagName === 'CANVAS' || n.tagName === 'SCRIPT' || n.tagName === 'STYLE') return;
+        if (n.getAttribute && n.getAttribute('data-cy') === 'canvasInteractivityEffect') return;
+        const cs = getComputedStyle(n);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return;
+        const r = n.getBoundingClientRect();
+        if (r.width < 180 || r.height < 100) return;
+        const txt = (n.innerText || '').trim();
+        if (txt.length < 25) return;
+        const cls = n.className ? n.className.toString() : '';
+        if (CHROME.test(cls)) return;
+        // Heuristic: a popup container has its own text and a high-ish z-index or is a dialog/modal
+        const z = parseInt(cs.zIndex, 10) || 0;
+        const looksPopup =
+          z > 10 ||
+          /modal|popup|window|dialog|ReactModal|tooltip|overlay/i.test(cls) ||
+          n.getAttribute('role') === 'dialog';
+        if (!looksPopup) return;
+        const area = r.width * r.height;
+        // Prefer the smallest qualifying container (the popup itself, not a huge wrapper)
+        if (best === null || area < bestArea) {
+          best = n;
+          bestArea = area;
         }
-        return null;
-      },
-      SYSTEM.source,
-    );
-    if (t) {
-      console.log(`\n  >> clicking "${t.desc}" at (${Math.round(t.x)},${Math.round(t.y)})`);
-      await page.mouse.click(t.x, t.y);
-      await page.waitForTimeout(1600);
-      const probe = await page.evaluate(() => {
-        const overlay = document.querySelector('.ReactModal__Overlay');
-        const content = document.querySelector('.ReactModal__Content');
-        let topZ = null,
-          topZVal = -1;
-        document.querySelectorAll('body *').forEach((n) => {
-          const cs = getComputedStyle(n);
-          const z = parseInt(cs.zIndex, 10);
-          const r = n.getBoundingClientRect();
-          if (!isNaN(z) && z > topZVal && r.width > 150 && r.height > 80 && cs.display !== 'none' && cs.visibility !== 'hidden') {
-            topZVal = z;
-            topZ = n;
-          }
-        });
-        const el = content || overlay || topZ;
-        return {
-          reactModalOverlay: !!overlay,
-          topZ: topZ ? `z=${topZVal} <${topZ.tagName}> class="${topZ.className.toString().slice(0, 100)}"` : 'none',
-          innerText: el ? el.innerText.slice(0, 1200) : '(none)',
-          outerHTML: el ? el.outerHTML.slice(0, 2200) : '(none)',
-        };
       });
-      console.log(`  .ReactModal__Overlay present: ${probe.reactModalOverlay}`);
-      console.log(`  highest z-index overlay: ${probe.topZ}`);
-      console.log('  --- popup innerText ---\n' + probe.innerText);
-      console.log('\n  --- popup outerHTML (2.2k) ---\n' + probe.outerHTML);
+      if (!best) return null;
+      return {
+        bodyTextGrew: document.body.innerText.length > beforeLen + 20,
+        tag: best.tagName,
+        cls: (best.className ? best.className.toString() : '').slice(0, 140),
+        role: best.getAttribute('role'),
+        zIndex: getComputedStyle(best).zIndex,
+        innerText: (best.innerText || '').slice(0, 1200),
+        outerHTML: best.outerHTML.slice(0, 2400),
+      };
+    }, before);
+
+    if (found && found.innerText && found.innerText.trim().length > 20) {
+      console.log(`\n  >>> POPUP FOUND after clicking "${t.desc}" on slide ${s}`);
+      console.log(`  container: <${found.tag}> role=${found.role} z=${found.zIndex} class="${found.cls}"`);
+      console.log(`  bodyTextGrew: ${found.bodyTextGrew}`);
+      console.log('  --- popup innerText ---\n' + found.innerText);
+      console.log('\n  --- popup outerHTML (2.4k) ---\n' + found.outerHTML);
       await page.keyboard.press('Escape');
-      await page.waitForTimeout(800);
-      const stillOpen = await page
+      await page.waitForTimeout(700);
+      const reactStillOpen = await page
         .locator('.ReactModal__Overlay')
         .isVisible({ timeout: 300 })
         .catch(() => false);
-      console.log(`  Escape closed it? ${!stillOpen}`);
-      break;
+      console.log(`\n  Escape closed ReactModal overlay? ${!reactStillOpen}`);
+      await browser.close();
+      console.log('\n=== DONE (popup captured) ===\n');
+      process.exit(0);
+    }
+
+    // No popup → likely navigation or pure animation. Restore: Escape, and if the
+    // slide changed, go back so the remaining targets stay aligned.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+    const afterLen = await page.evaluate(() => document.body.innerText.length);
+    if (Math.abs(afterLen - before) > 50) {
+      for (const sel of ['[aria-label*="previous" i]', '[aria-label*="Go to the prev" i]']) {
+        const b = page.locator(sel).first();
+        if (await b.isVisible({ timeout: 250 }).catch(() => false)) {
+          await b.click().catch(() => {});
+          break;
+        }
+      }
+      await page.waitForTimeout(900);
     }
   }
 
   await clickNextBtn();
   await page.waitForTimeout(1400);
 }
+
+console.log('\n  (no popup found across probed slides)');
 
 await browser.close();
 console.log('\n=== DONE ===\n');
