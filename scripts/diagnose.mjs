@@ -245,19 +245,23 @@ for (let s = 1; s <= 6; s++) {
     console.log(`    [${i}] <${d.tag}> "${d.txt || d.aria}" cls="${d.cls}" attrs=[${d.attrs}] @${d.pos}`),
   );
 
-  // On the first slide that has a content element, click it and dump the popup
+  // On the first slide that has a content element, click the real
+  // genially-view-item (same logic the scraper now uses) and dump the popup
   if (dump.length > 0 && s >= 2) {
     const t = await page.evaluate(
       (sysSrc) => {
         const sysRe = new RegExp(sysSrc, 'i');
-        for (const el of document.querySelectorAll('body *')) {
+        const added = [];
+        for (const el of document.querySelectorAll('[class*="genially-view-item"], [data-genially-id]')) {
           const cs = getComputedStyle(el);
           if (cs.cursor !== 'pointer') continue;
           const r = el.getBoundingClientRect();
           if (r.width < 8 || r.height < 8 || r.width > 1400) continue;
+          if (added.some((a) => a.contains(el))) continue;
           const desc = el.getAttribute('aria-label') || (el.textContent || '').trim().slice(0, 40);
           if (sysRe.test(desc)) continue;
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2, desc };
+          added.push(el);
+          if (desc && desc.length > 1) return { x: r.x + r.width / 2, y: r.y + r.height / 2, desc };
         }
         return null;
       },
