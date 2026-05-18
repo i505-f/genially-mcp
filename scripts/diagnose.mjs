@@ -169,81 +169,143 @@ console.log('\n── BUTTONS / ROLE=BUTTON (current slide, up to 30) ──');
 if (cursors.length === 0) console.log('  none found');
 cursors.forEach((el, i) => console.log(`  [${i}] ${el.tag} class="${el.class}" text="${el.text}" aria="${el.ariaLabel}"`));
 
-// ── 6. PROBE A REAL POPUP: reload, advance to a slide with a hotspot, click it ──
-console.log('\n── POPUP PROBE ──');
+// ── 6. DOM STRUCTURE PROBE: how does Genially mark interactive content? ──
+console.log('\n── DOM STRUCTURE PROBE ──');
 await page.goto(url, { waitUntil: 'load', timeout: 30000 });
 await page.waitForTimeout(3500);
 
-// Advance a few slides to reach interactive content (e.g. slide ~4 with "+Info")
-for (let i = 0; i < 3; i++) {
-  await page.keyboard.press('ArrowRight');
-  await page.waitForTimeout(1300);
-}
+// 6a. iframes?
+const frames = page.frames().map((f) => f.url());
+console.log(`  page.frames(): ${frames.length}`);
+frames.forEach((u, i) => console.log(`    [${i}] ${u.slice(0, 120)}`));
 
-const SYSTEM = /^(go to the (next|prev)|full.?screen|share|audio|show interactive)/i;
-const target = await page.evaluate((sysSrc) => {
-  const sysRe = new RegExp(sysSrc, 'i');
-  const sels = [
-    '[class*="hotspot"]', '[class*="interactivity"]', '[data-animation]',
-    '[class*="interactive"]', '[onclick]', '[class*="genially-view-cursor-pointer"]',
-  ];
-  for (const sel of sels) {
-    for (const el of document.querySelectorAll(sel)) {
-      const r = el.getBoundingClientRect();
-      if (r.width < 5 || r.height < 5) continue;
-      const desc = el.getAttribute('aria-label') || el.textContent?.trim().slice(0, 40) || el.className.toString().slice(0, 40);
-      if (sysRe.test(desc)) continue;
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2, desc };
+const iframeInfo = await page.evaluate(() => {
+  return [...document.querySelectorAll('iframe')].map((f) => ({
+    src: f.src.slice(0, 120),
+    cls: f.className.toString().slice(0, 80),
+    w: Math.round(f.getBoundingClientRect().width),
+    h: Math.round(f.getBoundingClientRect().height),
+  }));
+});
+console.log(`  <iframe> elements: ${iframeInfo.length}`);
+iframeInfo.forEach((f, i) => console.log(`    [${i}] ${f.w}x${f.h} class="${f.cls}" src="${f.src}"`));
+
+// Use the proven next-button to navigate (ArrowRight may not have focus)
+async function clickNextBtn() {
+  for (const sel of ['[aria-label*="next" i]', '[class*="arrow-right"]', '[class*="next"]']) {
+    const b = page.locator(sel).first();
+    if (await b.isVisible({ timeout: 300 }).catch(() => false)) {
+      await b.click().catch(() => {});
+      return true;
     }
   }
-  return null;
-}, SYSTEM.source);
+  return false;
+}
 
-if (!target) {
-  console.log('  no clickable hotspot found on this slide');
-} else {
-  console.log(`  clicking target: "${target.desc}" at (${Math.round(target.x)}, ${Math.round(target.y)})`);
-  await page.mouse.click(target.x, target.y);
-  await page.waitForTimeout(1500);
+const SYSTEM = /go to the (next|prev)|full.?screen|^share$|audio|show interactive|previous page|next page/i;
 
-  const probe = await page.evaluate(() => {
-    const overlay = document.querySelector('.ReactModal__Overlay');
-    const content = document.querySelector('.ReactModal__Content');
-    const el = content || overlay;
-    // Highest z-index element that is large and visible (potential popup container)
-    let topZ = null, topZVal = -1;
-    document.querySelectorAll('body *').forEach((n) => {
-      const cs = getComputedStyle(n);
-      const z = parseInt(cs.zIndex, 10);
-      const r = n.getBoundingClientRect();
-      if (!isNaN(z) && z > topZVal && r.width > 150 && r.height > 100 && cs.display !== 'none' && cs.visibility !== 'hidden') {
-        topZVal = z; topZ = n;
-      }
+// Probe slides 1..6 — dump every element whose COMPUTED cursor is pointer
+for (let s = 1; s <= 6; s++) {
+  const dump = await page.evaluate((sysSrc) => {
+    const sysRe = new RegExp(sysSrc, 'i');
+    const out = [];
+    const seen = new Set();
+    document.querySelectorAll('body *').forEach((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.cursor !== 'pointer') return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.width > 1400) return;
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      const aria = el.getAttribute('aria-label') || '';
+      const txt = (el.textContent || '').trim().slice(0, 40);
+      const desc = aria || txt;
+      if (sysRe.test(desc)) return;
+      const key = `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({
+        tag: el.tagName,
+        cls: el.className.toString().slice(0, 70),
+        aria,
+        txt,
+        attrs: [...el.attributes].map((a) => a.name).join(','),
+        pos: `${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}`,
+      });
     });
-    return {
-      reactModalOverlay: !!overlay,
-      reactModalContent: !!content,
-      modalOuterHTML: el ? el.outerHTML.slice(0, 2500) : null,
-      modalInnerText: el ? el.innerText.slice(0, 1500) : null,
-      topZIndex: topZVal,
-      topZClass: topZ ? topZ.className.toString().slice(0, 120) : null,
-      topZTag: topZ ? topZ.tagName : null,
-      topZInnerText: topZ ? topZ.innerText.slice(0, 1500) : null,
-      topZOuterHTMLHead: topZ ? topZ.outerHTML.slice(0, 1200) : null,
-    };
-  });
-  console.log(`  .ReactModal__Overlay present: ${probe.reactModalOverlay}`);
-  console.log(`  .ReactModal__Content present: ${probe.reactModalContent}`);
-  console.log(`  highest z-index overlay: z=${probe.topZIndex} <${probe.topZTag}> class="${probe.topZClass}"`);
-  console.log('\n  --- modal innerText ---\n' + (probe.modalInnerText ?? '(none)'));
-  console.log('\n  --- modal outerHTML (2.5k) ---\n' + (probe.modalOuterHTML ?? '(none)'));
-  console.log('\n  --- top-z innerText ---\n' + (probe.topZInnerText ?? '(none)'));
-  console.log('\n  --- top-z outerHTML head ---\n' + (probe.topZOuterHTMLHead ?? '(none)'));
+    return out.slice(0, 12);
+  }, SYSTEM.source);
 
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(800);
-  const stillOpen = await page.locator('.ReactModal__Overlay').isVisible({ timeout: 300 }).catch(() => false);
-  console.log(`\n  Escape closed the modal? ${!stillOpen} (overlay still visible: ${stillOpen})`);
+  const counter = await page.evaluate(() => {
+    const m = (document.body.innerText || '').match(/\b(\d+)\s*(?:of|de|\/)\s*(\d+)\b/i);
+    return m ? `${m[1]}/${m[2]}` : '?';
+  });
+
+  console.log(`\n  ── slide ${s} (counter ${counter}): ${dump.length} cursor:pointer content elements ──`);
+  dump.forEach((d, i) =>
+    console.log(`    [${i}] <${d.tag}> "${d.txt || d.aria}" cls="${d.cls}" attrs=[${d.attrs}] @${d.pos}`),
+  );
+
+  // On the first slide that has a content element, click it and dump the popup
+  if (dump.length > 0 && s >= 2) {
+    const t = await page.evaluate(
+      (sysSrc) => {
+        const sysRe = new RegExp(sysSrc, 'i');
+        for (const el of document.querySelectorAll('body *')) {
+          const cs = getComputedStyle(el);
+          if (cs.cursor !== 'pointer') continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 8 || r.height < 8 || r.width > 1400) continue;
+          const desc = el.getAttribute('aria-label') || (el.textContent || '').trim().slice(0, 40);
+          if (sysRe.test(desc)) continue;
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2, desc };
+        }
+        return null;
+      },
+      SYSTEM.source,
+    );
+    if (t) {
+      console.log(`\n  >> clicking "${t.desc}" at (${Math.round(t.x)},${Math.round(t.y)})`);
+      await page.mouse.click(t.x, t.y);
+      await page.waitForTimeout(1600);
+      const probe = await page.evaluate(() => {
+        const overlay = document.querySelector('.ReactModal__Overlay');
+        const content = document.querySelector('.ReactModal__Content');
+        let topZ = null,
+          topZVal = -1;
+        document.querySelectorAll('body *').forEach((n) => {
+          const cs = getComputedStyle(n);
+          const z = parseInt(cs.zIndex, 10);
+          const r = n.getBoundingClientRect();
+          if (!isNaN(z) && z > topZVal && r.width > 150 && r.height > 80 && cs.display !== 'none' && cs.visibility !== 'hidden') {
+            topZVal = z;
+            topZ = n;
+          }
+        });
+        const el = content || overlay || topZ;
+        return {
+          reactModalOverlay: !!overlay,
+          topZ: topZ ? `z=${topZVal} <${topZ.tagName}> class="${topZ.className.toString().slice(0, 100)}"` : 'none',
+          innerText: el ? el.innerText.slice(0, 1200) : '(none)',
+          outerHTML: el ? el.outerHTML.slice(0, 2200) : '(none)',
+        };
+      });
+      console.log(`  .ReactModal__Overlay present: ${probe.reactModalOverlay}`);
+      console.log(`  highest z-index overlay: ${probe.topZ}`);
+      console.log('  --- popup innerText ---\n' + probe.innerText);
+      console.log('\n  --- popup outerHTML (2.2k) ---\n' + probe.outerHTML);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(800);
+      const stillOpen = await page
+        .locator('.ReactModal__Overlay')
+        .isVisible({ timeout: 300 })
+        .catch(() => false);
+      console.log(`  Escape closed it? ${!stillOpen}`);
+      break;
+    }
+  }
+
+  await clickNextBtn();
+  await page.waitForTimeout(1400);
 }
 
 await browser.close();
