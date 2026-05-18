@@ -18,52 +18,43 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
   return page.evaluate((systemPattern: string): ClickTarget[] => {
     const systemRe = new RegExp(systemPattern, 'i');
 
-    const interactiveSelectors = [
-      '[class*="hotspot"]',
-      '[class*="hot-spot"]',
-      '[class*="interactivity-button"]',
-      '[class*="interactive-area"]',
-      '[class*="element-button"]',
-      '[class*="element-interactive"]',
-      '[class*="interactivity"]',
-      '[data-animation]',
-      '[data-genially-type="button"]',
-      '[data-genially-type="hotspot"]',
-      '[data-genially-interactivity]',
-      '[class*="tooltip-trigger"]',
-      '[class*="popup-trigger"]',
-      '[class*="interactive"]',
-      '[class*="genially-view-hotspot"]',
-      '[class*="pulse"]',
-      '[class*="ping"]',
-      '[class*="marker"]',
-      '[onclick]',
-      '[class*="genially-view-cursor-pointer"]',
-    ];
+    // Genially renders every slide element as a `.genially-view-item` carrying a
+    // `data-genially-id`. There are NO hotspot/interactive classes or onclick
+    // attributes (class names are obfuscated styled-components). The only reliable
+    // signal that an item is clickable is a COMPUTED `cursor: pointer`. Scoping
+    // getComputedStyle to genially-view-item (tens of nodes, not thousands) keeps
+    // this fast.
+    const items = Array.from(
+      document.querySelectorAll('[class*="genially-view-item"], [data-genially-id]'),
+    );
 
-    const byPosition = new Map<string, ClickTarget>();
+    const added: Element[] = [];
+    const targets: ClickTarget[] = [];
 
-    for (const sel of interactiveSelectors) {
-      document.querySelectorAll(sel).forEach((el) => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 5 || rect.height < 5) return;
+    for (const el of items) {
+      const cs = window.getComputedStyle(el);
+      if (cs.cursor !== 'pointer') continue;
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
 
-        const desc =
-          el.getAttribute('aria-label') ||
-          el.getAttribute('title') ||
-          el.textContent?.trim().slice(0, 60) ||
-          el.className.toString().slice(0, 50) ||
-          'interactive element';
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 8 || rect.height < 8 || rect.width > 1400) continue;
 
-        if (systemRe.test(desc)) return;
+      // Skip elements nested inside one we already took (item > group > span all
+      // share the same click) — document order guarantees the outermost comes first
+      if (added.some((a) => a.contains(el))) continue;
 
-        const key = `${Math.round(rect.x / 5) * 5},${Math.round(rect.y / 5) * 5}`;
-        if (byPosition.has(key)) return;
-        byPosition.set(key, { description: desc, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
-      });
+      const desc =
+        el.getAttribute('aria-label') ||
+        el.textContent?.trim().slice(0, 60) ||
+        el.getAttribute('data-noddus-item-name') ||
+        'interactive element';
+      if (systemRe.test(desc)) continue;
+
+      added.push(el);
+      targets.push({ description: desc, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
     }
 
-    return [...byPosition.values()].slice(0, 20);
+    return targets.slice(0, 25);
   }, SYSTEM_LABEL.source);
 }
 
