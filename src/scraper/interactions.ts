@@ -19,7 +19,6 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
     const systemRe = new RegExp(systemPattern, 'i');
 
     const interactiveSelectors = [
-      // Genially v3/v4 hotspot & button classes
       '[class*="hotspot"]',
       '[class*="hot-spot"]',
       '[class*="interactivity-button"]',
@@ -27,23 +26,18 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
       '[class*="element-button"]',
       '[class*="element-interactive"]',
       '[class*="interactivity"]',
-      // Data attributes used by Genially's renderer
       '[data-animation]',
       '[data-genially-type="button"]',
       '[data-genially-type="hotspot"]',
       '[data-genially-interactivity]',
-      // Tooltip / popup triggers
       '[class*="tooltip-trigger"]',
       '[class*="popup-trigger"]',
       '[class*="interactive"]',
       '[class*="genially-view-hotspot"]',
-      // Animation marker classes (pulse dots visible on slides)
       '[class*="pulse"]',
       '[class*="ping"]',
       '[class*="marker"]',
-      // Elements with explicit onclick handlers injected by Genially's JS
       '[onclick]',
-      // Genially viewer cursor-pointer elements (content hotspots use this class)
       '[class*="genially-view-cursor-pointer"]',
     ];
 
@@ -61,7 +55,6 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
           el.className.toString().slice(0, 50) ||
           'interactive element';
 
-        // Skip viewer chrome (next/prev/fullscreen/share/audio/etc.)
         if (systemRe.test(desc)) return;
 
         const key = `${Math.round(rect.x / 5) * 5},${Math.round(rect.y / 5) * 5}`;
@@ -74,9 +67,15 @@ export async function findClickTargets(page: Page): Promise<ClickTarget[]> {
   }, SYSTEM_LABEL.source);
 }
 
+async function isModalOpen(page: Page): Promise<boolean> {
+  // Check .ReactModal__Overlay (without --after-open) so we catch it during animations too
+  return page.locator('.ReactModal__Overlay').isVisible({ timeout: 300 }).catch(() => false);
+}
+
 async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
   return page.evaluate((): { triggerDescription: string; text: string[]; images: SlideImage[] } | null => {
     const popupSelectors = [
+      '.ReactModal__Content',
       '[class*="genially-view-modal"]',
       '[class*="genially-modal"]',
       '[role="dialog"]',
@@ -88,7 +87,6 @@ async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
       '[class*="overlay"][class*="active"]',
       '[class*="tooltip"][class*="show"]',
       '[class*="tooltip"][class*="visible"]',
-      // Genially-specific panel/content overlay selectors
       '[class*="genially-view-content"]',
       '[class*="genially-view-panel"]',
       '[class*="genially-view-window"]',
@@ -127,17 +125,12 @@ async function captureOpenPopup(page: Page): Promise<PopupContent | null> {
 }
 
 async function dismissPopup(page: Page): Promise<void> {
-  // Escape is the universal modal close — try it first
   await page.keyboard.press('Escape');
   await page.waitForTimeout(400);
 
-  const stillOpen = await page
-    .locator('.ReactModal__Overlay--after-open')
-    .isVisible({ timeout: 200 })
-    .catch(() => false);
-  if (!stillOpen) return;
+  if (!(await isModalOpen(page))) return;
 
-  // Modal still open — try close buttons inside it
+  // Escape didn't close it — try explicit close buttons inside the modal
   const dismissSelectors = [
     '.ReactModal__Content button',
     '[class*="close"]',
@@ -186,27 +179,29 @@ export async function clickAndCapturePopups(page: Page): Promise<PopupContent[]>
       const fpBefore = await getSlideTextFingerprint(page);
 
       await page.mouse.click(cx, cy);
-      await page.waitForTimeout(450);
+      await page.waitForTimeout(700); // allow modal animations to complete
 
       const fpAfter = await getSlideTextFingerprint(page);
-      const modalOpen = await page
-        .locator('.ReactModal__Overlay--after-open')
-        .isVisible({ timeout: 100 })
-        .catch(() => false);
+      const modalNowOpen = await isModalOpen(page);
 
-      // If fingerprint changed but a modal is open, that's expected (modal text added to DOM)
-      // If fingerprint changed with NO modal, the click triggered slide navigation — undo it
-      if (fpAfter !== fpBefore && !modalOpen) {
+      if (fpAfter !== fpBefore && !modalNowOpen) {
+        // Fingerprint changed without a modal appearing → navigation click
         log.info(`Click on "${target.description}" triggered navigation, restoring`);
         await navigateBack(page);
         continue;
       }
 
+      // Capture whatever opened (modal or other overlay)
       const popup = await captureOpenPopup(page);
       if (popup && (popup.text.length > 0 || popup.images.length > 0)) {
         popups.push({ ...popup, triggerDescription: target.description });
+      }
+
+      // Always dismiss — even if capture found nothing, the modal must be closed
+      // so it doesn't block subsequent navigation
+      if (modalNowOpen || fpAfter !== fpBefore) {
         await dismissPopup(page);
-        await page.waitForTimeout(250);
+        await page.waitForTimeout(300);
       }
     } catch (err) {
       log.warn(`Failed to interact with "${target.description}": ${err instanceof Error ? err.message : String(err)}`);

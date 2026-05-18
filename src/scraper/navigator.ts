@@ -84,7 +84,7 @@ export async function getSlideTextFingerprint(page: Page): Promise<string> {
 export async function navigateToNextSlide(page: Page): Promise<boolean> {
   // Dismiss any blocking modal before attempting navigation
   const modalOpen = await page
-    .locator('.ReactModal__Overlay--after-open')
+    .locator('.ReactModal__Overlay')
     .isVisible({ timeout: 200 })
     .catch(() => false);
   if (modalOpen) {
