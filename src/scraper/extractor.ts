@@ -193,6 +193,11 @@ export async function extractHiddenContent(page: Page): Promise<PopupContent[]> 
       return false;
     };
 
+    // Same filter extractSlideData uses: styled-components inject <style> blocks
+    // inside these wrappers, and textContent would otherwise leak raw CSS.
+    const CSS_PATTERN =
+      /(?:@keyframes\s|@media\s|\.[\w-]+\s*\{|\w+\s*:\s*\w+[^;]*;[\s\S]*?\}|:hover\s*\{|:focus\s*\{|animation\s*:|transition\s*:|transform\s*:)/;
+
     const popups: { triggerDescription: string; text: string[]; images: SlideImage[] }[] = [];
     const seen = new Set<string>();
 
@@ -205,13 +210,16 @@ export async function extractHiddenContent(page: Page): Promise<PopupContent[]> 
       const hidden = isHidden(w) || (inner !== null && isHidden(inner));
       if (!hidden) return;
 
-      const raw = (w as HTMLElement).textContent ?? '';
+      // Clone and strip <script>/<style> so styled-components CSS doesn't leak in
+      const clone = w.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('script, style').forEach((el) => el.remove());
+      const raw = clone.textContent ?? '';
       const lines = [
         ...new Set(
           raw
             .split('\n')
             .map((s) => s.trim())
-            .filter((s) => s.length > 1),
+            .filter((s) => s.length > 1 && !CSS_PATTERN.test(s)),
         ),
       ];
       if (lines.length === 0) return;
