@@ -13,6 +13,7 @@ Navigates a Genially presentation URL, iterates through all slides, and returns 
 | `url` | string | yes | Genially presentation URL (e.g. `https://view.genially.com/abc123`) |
 | `timeout_ms` | number | no | Timeout per operation in ms (default: 30000, max: 300000) |
 | `click_interactive` | boolean | no | Capture hidden/emergent content (default: true) |
+| `click_interactive` | boolean | no | Click interactive elements to reveal popups (default: true) |
 | `headless` | boolean | no | Run browser in headless mode (default: true) |
 
 ### Output
