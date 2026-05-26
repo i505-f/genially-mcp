@@ -91,14 +91,24 @@ async function getFP() {
   return fingerprint(text);
 }
 
+async function getPageCounter() {
+  const text = await page.evaluate(() => document.body.innerText ?? '');
+  const m = text.match(/\b(\d+)\s*(?:of|de|\/)\s*(\d+)\b/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 async function clickNext() {
-  for (const sel of nextSelectors) {
+  const current = await getPageCounter();
+  const dynamic = current != null
+    ? [`[aria-label="Go to page ${current + 1}"]`, `[aria-label="Ir a la página ${current + 1}"]`]
+    : [];
+
+  for (const sel of [...dynamic, ...nextSelectors]) {
     const btn = page.locator(sel).first();
     const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
     if (visible) {
       let ok = await btn.click({ timeout: 2000 }).then(() => true).catch(() => false);
       if (!ok) {
-        // Mirror production: bypass sc-* overlays via direct React onClick dispatch
         ok = await btn.evaluate((el) => el.click()).then(() => true).catch(() => false);
       }
       if (ok) return `button:${sel}`;
