@@ -95,7 +95,14 @@ async function clickNext() {
   for (const sel of nextSelectors) {
     const btn = page.locator(sel).first();
     const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
-    if (visible) { await btn.click(); return `button:${sel}`; }
+    if (visible) {
+      let ok = await btn.click({ timeout: 2000 }).then(() => true).catch(() => false);
+      if (!ok) {
+        // Mirror production: bypass sc-* overlays via direct React onClick dispatch
+        ok = await btn.evaluate((el) => el.click()).then(() => true).catch(() => false);
+      }
+      if (ok) return `button:${sel}`;
+    }
   }
   await page.keyboard.press('ArrowRight');
   return 'ArrowRight';
