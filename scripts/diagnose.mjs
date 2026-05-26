@@ -108,12 +108,12 @@ async function clickNext() {
   return 'ArrowRight';
 }
 
-console.log('\n── NAVIGATION (15 steps) ──');
+console.log('\n── NAVIGATION (30 steps) ──');
 const firstFP = await getFP();
 let prevFP = firstFP;
 console.log(`start  fp=${firstFP}`);
 
-for (let i = 1; i <= 15; i++) {
+for (let i = 1; i <= 30; i++) {
   const method = await clickNext();
   await page.waitForTimeout(1400);
   const fp = await getFP();
