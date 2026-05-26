@@ -158,18 +158,35 @@ export async function navigateToNextSlide(page: Page): Promise<boolean> {
     const btn = page.locator(sel).first();
     const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
     if (visible) {
-      // Short timeout so a still-blocking overlay doesn't hang 30s; fall back to keyboard
-      const ok = await btn
-        .click({ timeout: 4000 })
+      let ok = await btn
+        .click({ timeout: 2000 })
         .then(() => true)
         .catch(() => false);
+      // Cover screens have a sibling .sc-* (styled-component) layer that
+      // intercepts pointer events at the button's coordinates. force:true
+      // still routes through that overlay, so dispatch the React onClick
+      // handler directly on the element via JS.
+      if (!ok) {
+        ok = await btn
+          .evaluate((el) => (el as HTMLElement).click())
+          .then(() => true)
+          .catch(() => false);
+      }
       buttonClicked = ok;
       break;
     }
   }
 
-  // Use ArrowRight if no button was found, or the button click was blocked
+  // ArrowRight fallback — focus the viewer first so the key event reaches it
   if (!buttonClicked) {
+    await page
+      .evaluate(() => {
+        const viewer = document.querySelector<HTMLElement>(
+          '.genially-view-window, [class*="genially-view"]',
+        );
+        viewer?.focus?.();
+      })
+      .catch(() => {});
     await page.keyboard.press('ArrowRight');
   }
 
