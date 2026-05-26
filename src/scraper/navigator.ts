@@ -141,7 +141,23 @@ export async function navigateToNextSlide(page: Page): Promise<boolean> {
   // Dismiss any blocking modal before attempting navigation
   await dismissAnyModal(page);
 
+  // Genially uses two aria-label patterns for the next-slide button:
+  //  1. Generic: "Go to the next page" / "Empezar, Go to the next page"
+  //  2. Slide-specific numeric: "Go to page N" / "Ir a la página N"
+  // Compute the slide-specific selector from the page counter — a broader
+  // [aria-label*="Go to page"] would also match "Go to first page" and any
+  // content-level jump links on hub/TOC slides.
+  const { current } = await getPageInfo(page).catch(() => ({ current: null as number | null }));
+  const dynamicSelectors =
+    current != null
+      ? [
+          `[aria-label="Go to page ${current + 1}"]`,
+          `[aria-label="Ir a la página ${current + 1}"]`,
+        ]
+      : [];
+
   const nextButtonSelectors = [
+    ...dynamicSelectors,
     '[class*="next"]:not([class*="navigation-bar"])',
     '[class*="arrow-right"]',
     '[aria-label*="next" i]',
