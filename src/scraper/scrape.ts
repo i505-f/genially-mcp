@@ -1,11 +1,26 @@
 import { launchBrowser, createPage } from './browser.js';
 import { waitForPresentation, getSlideCount, navigateToNextSlide, getSlideTextFingerprint, getPageInfo } from './navigator.js';
 import { extractSlideData, tryExtractFromInitialData, extractHiddenContent } from './extractor.js';
-import { ScrapeOptions, PresentationTranscript, SlideContent, SlideImage, PopupContent } from './types.js';
+import { ScrapeOptions, PresentationTranscript, SlideContent, SlideImage, PopupContent, DEFAULT_TIMEOUT_MS } from './types.js';
 import { log } from '../utils/logger.js';
 
+// Only Genially presentations are loaded: the browser runs without a sandbox and
+// returns page text, so arbitrary URLs would expose local files and internal hosts
+export function isGeniallyUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  const host = url.hostname.toLowerCase();
+  return host === 'genially.com' || host.endsWith('.genially.com');
+}
+
 export async function scrapePresentation(options: ScrapeOptions): Promise<PresentationTranscript> {
-  const timeoutMs = options.timeoutMs ?? 30000;
+  if (!isGeniallyUrl(options.url)) throw new Error(`Not a Genially URL: ${options.url}`);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const browser = await launchBrowser(options.headless ?? true);
 
   try {
@@ -16,6 +31,7 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
       waitUntil: 'domcontentloaded',
       timeout: timeoutMs,
     });
+    if (!isGeniallyUrl(page.url())) throw new Error(`Redirected away from Genially to ${page.url()}`);
 
     await waitForPresentation(page, timeoutMs);
 
@@ -44,13 +60,26 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
           slides[i].popups = popups;
           if (popups.length > 0) log.info(`Slide ${i + 1}: captured ${popups.length} hidden/emergent blocks`);
 
-          if (i < slides.length - 1) {
-            await navigateToNextSlide(page);
-            const fp = await getSlideTextFingerprint(page);
-            if (fp === firstFingerprint && i > 0) {
-              log.info(`Navigation looped at slide ${i + 1}, stopping`);
-              break;
-            }
+          if (i === slides.length - 1) break;
+
+          // Text already comes from INITIAL_DATA: a navigation failure must not discard
+          // it, and a stalled navigation must not attribute this slide's popups to the next
+          let moved: boolean;
+          let fp: string;
+          try {
+            moved = await navigateToNextSlide(page);
+            fp = await getSlideTextFingerprint(page);
+          } catch (e) {
+            log.warn(`Navigation failed at slide ${i + 1}, popups for later slides not captured: ${e}`);
+            break;
+          }
+          if (!moved) {
+            log.warn(`Navigation stalled at slide ${i + 1}, popups for later slides not captured`);
+            break;
+          }
+          if (fp === firstFingerprint) {
+            log.info(`Navigation looped at slide ${i + 1}, stopping`);
+            break;
           }
         }
       }
@@ -133,15 +162,6 @@ export async function scrapePresentation(options: ScrapeOptions): Promise<Presen
       }
 
       slides.push({ slideIndex, slideTitle, text, images, popups });
-
-      const slideCountMatch = text.join(' ').match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
-      if (slideCountMatch) {
-        const detected = parseInt(slideCountMatch[1], 10);
-        if (detected > slideCount) {
-          slideCount = detected;
-          log.info(`Updated slide count to ${slideCount} from slide text`);
-        }
-      }
 
       if (slideCount > 1 && slides.length >= slideCount) {
         log.info(`Collected all ${slideCount} slides, stopping`);

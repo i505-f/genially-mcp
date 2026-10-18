@@ -10,10 +10,9 @@ Navigates a Genially presentation URL, iterates through all slides, and returns 
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `url` | string | yes | Genially presentation URL (e.g. `https://view.genially.com/abc123`) |
+| `url` | string | yes | Genially presentation URL (e.g. `https://view.genially.com/abc123`); only `genially.com` hosts are accepted |
 | `timeout_ms` | number | no | Timeout per operation in ms (default: 30000, max: 300000) |
 | `click_interactive` | boolean | no | Capture hidden/emergent content (default: true) |
-| `click_interactive` | boolean | no | Click interactive elements to reveal popups (default: true) |
 | `headless` | boolean | no | Run browser in headless mode (default: true) |
 
 ### Output
@@ -53,6 +52,7 @@ Navigates a Genially presentation URL, iterates through all slides, and returns 
 ## What it cannot do
 
 - **Read text embedded in images.** If a slide contains a photograph or diagram where the text is part of the image itself, that text is not extracted. Only the image URL is returned.
+- **Load non-Genially URLs.** Only `http(s)` URLs on `genially.com` or its subdomains are accepted, and a redirect to another host aborts the scrape.
 - **Capture content that requires account login.** Presentations behind a Genially login wall are not accessible.
 - **Guarantee complete coverage of every interactive pattern.** The tool reads hidden content that Genially pre-renders in the DOM. Content that is loaded dynamically after a click (via a network request) may not be captured.
 - **Preserve layout or visual structure.** The output is a flat list of text strings per slide. Reading order may not match the visual order on screen, especially for complex multi-column or layered layouts.

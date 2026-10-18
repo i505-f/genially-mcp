@@ -56,7 +56,6 @@ const slideInfo = await page.evaluate(() => {
     '[class*="slide-indicator"] span',
     '[class*="nav-dots"] button',
     '[class*="pagination"] button',
-    '[class*="bullet"]',
   ];
   const results = {};
   for (const sel of dotSelectors) {
@@ -64,8 +63,8 @@ const slideInfo = await page.evaluate(() => {
     results[sel] = els.length;
   }
   const bodyText = document.body.innerText ?? '';
-  const m = bodyText.match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
-  results['body "X of N" match'] = m ? m[0] : 'none';
+  const m = bodyText.match(/\b(?:page|p[áa]gina)\s+\d+\s+(?:of|de)\s+\d+\b/i);
+  results['body "Page X of N" match'] = m ? m[0] : 'none';
   return results;
 });
 console.log('\n── SLIDE COUNT SELECTORS ──');
@@ -91,10 +90,27 @@ async function getFP() {
   return fingerprint(text);
 }
 
+// Mirrors navigator.getPageInfo: explicit "Page N of M", else an element whose
+// entire text is "N of M" / "N / M"
 async function getPageCounter() {
-  const text = await page.evaluate(() => document.body.innerText ?? '');
-  const m = text.match(/\b(\d+)\s*(?:of|de|\/)\s*(\d+)\b/i);
-  return m ? parseInt(m[1], 10) : null;
+  return page.evaluate(() => {
+    const valid = (c, t) => c >= 1 && t >= c && t <= 500;
+    const bodyText = document.body.innerText ?? '';
+    for (const m of bodyText.matchAll(/\b(?:page|p[áa]gina)\s+(\d+)\s+(?:of|de)\s+(\d+)\b/gi)) {
+      const c = parseInt(m[1], 10);
+      if (valid(c, parseInt(m[2], 10))) return c;
+    }
+    let found = null;
+    for (const el of document.body.querySelectorAll('*')) {
+      const text = el.textContent?.trim() ?? '';
+      if (text.length === 0 || text.length > 24) continue;
+      const m = text.match(/^(\d+)\s*(?:of|de|\/)\s*(\d+)$/i);
+      if (!m || !el.checkVisibility()) continue;
+      const c = parseInt(m[1], 10);
+      if (valid(c, parseInt(m[2], 10))) found = c;
+    }
+    return found;
+  });
 }
 
 async function clickNext() {
@@ -252,10 +268,7 @@ for (let s = 1; s <= 6; s++) {
     return out.slice(0, 12);
   }, SYSTEM.source);
 
-  const counter = await page.evaluate(() => {
-    const m = (document.body.innerText || '').match(/\b(\d+)\s*(?:of|de|\/)\s*(\d+)\b/i);
-    return m ? `${m[1]}/${m[2]}` : '?';
-  });
+  const counter = (await getPageCounter()) ?? '?';
 
   console.log(`\n  ── slide ${s} (counter ${counter}): ${dump.length} cursor:pointer content elements ──`);
   dump.forEach((d, i) =>
