@@ -1,27 +1,30 @@
 import { z } from 'zod';
-import { scrapePresentation } from '../scraper/scrape.js';
+import { scrapePresentation, isGeniallyUrl } from '../scraper/scrape.js';
+import { DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS } from '../scraper/types.js';
 import { log } from '../utils/logger.js';
+
+const DESCRIPTIONS = {
+  url: 'URL of the Genially presentation (e.g. https://view.genially.com/abc123). Only genially.com URLs are accepted.',
+  timeout_ms: `Timeout in milliseconds per operation (default: ${DEFAULT_TIMEOUT_MS}, min: ${MIN_TIMEOUT_MS}, max: ${MAX_TIMEOUT_MS})`,
+  click_interactive: 'Whether to capture hidden/emergent popup content (default: true)',
+  headless: 'Run browser in headless mode (default: true)',
+};
 
 export const inputSchema = z.object({
   url: z
     .string()
     .url()
-    .describe('URL of the Genially presentation (e.g. https://view.genially.com/abc123)'),
+    .refine(isGeniallyUrl, { message: 'URL must be an http(s) genially.com address' })
+    .describe(DESCRIPTIONS.url),
   timeout_ms: z
     .number()
     .int()
-    .min(5000)
-    .max(300000)
+    .min(MIN_TIMEOUT_MS)
+    .max(MAX_TIMEOUT_MS)
     .optional()
-    .describe('Timeout in milliseconds per operation (default: 30000)'),
-  click_interactive: z
-    .boolean()
-    .optional()
-    .describe('Whether to click interactive elements to reveal popup content (default: true)'),
-  headless: z
-    .boolean()
-    .optional()
-    .describe('Run browser in headless mode (default: true)'),
+    .describe(DESCRIPTIONS.timeout_ms),
+  click_interactive: z.boolean().optional().describe(DESCRIPTIONS.click_interactive),
+  headless: z.boolean().optional().describe(DESCRIPTIONS.headless),
 });
 
 export type ScrapePresentationInput = z.infer<typeof inputSchema>;
@@ -30,27 +33,20 @@ export const TOOL_DEFINITION = {
   name: 'scrape-presentation',
   description:
     'Scrapes a Genially presentation and returns a complete transcript of all slides. ' +
-    'Navigates through every slide and clicks interactive elements (hotspots, buttons, popups) ' +
-    'to reveal hidden popup content. Returns text, images, and popup content per slide.',
+    'Navigates through every slide and reads interactive content (hotspots, buttons, popups) ' +
+    'that Genially pre-renders hidden in the page. Returns text, images, and popup content per slide.',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      url: {
-        type: 'string',
-        description: 'URL of the Genially presentation (e.g. https://view.genially.com/abc123)',
-      },
+      url: { type: 'string', format: 'uri', description: DESCRIPTIONS.url },
       timeout_ms: {
-        type: 'number',
-        description: 'Timeout in milliseconds per operation (default: 30000, max: 300000)',
+        type: 'integer',
+        minimum: MIN_TIMEOUT_MS,
+        maximum: MAX_TIMEOUT_MS,
+        description: DESCRIPTIONS.timeout_ms,
       },
-      click_interactive: {
-        type: 'boolean',
-        description: 'Whether to click interactive elements to reveal popup content (default: true)',
-      },
-      headless: {
-        type: 'boolean',
-        description: 'Run browser in headless mode (default: true)',
-      },
+      click_interactive: { type: 'boolean', description: DESCRIPTIONS.click_interactive },
+      headless: { type: 'boolean', description: DESCRIPTIONS.headless },
     },
     required: ['url'],
     additionalProperties: false,
@@ -59,7 +55,7 @@ export const TOOL_DEFINITION = {
 
 export async function handleTool(
   args: unknown,
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   const parsed = inputSchema.safeParse(args);
 
   if (!parsed.success) {
@@ -70,6 +66,7 @@ export async function handleTool(
           text: JSON.stringify({ error: 'Invalid input', details: parsed.error.flatten() }),
         },
       ],
+      isError: true,
     };
   }
 
@@ -107,6 +104,7 @@ export async function handleTool(
           }),
         },
       ],
+      isError: true,
     };
   }
 }

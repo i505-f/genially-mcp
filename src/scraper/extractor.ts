@@ -19,6 +19,12 @@ export async function tryExtractFromInitialData(page: Page): Promise<InitialData
     const raw: unknown[] | undefined = w.INITIAL_DATA?.socialViewProps?.rawTranscriptions;
     if (!Array.isArray(raw) || raw.length === 0) return null;
 
+    const h = window.__geniallyScraper;
+    if (!h) throw new Error('genially-scraper page helpers are not installed');
+
+    // DOMParser documents are inert: no image loads, no inline handlers run
+    const parser = new DOMParser();
+
     return raw.map((item: unknown, idx: number) => {
       const html =
         typeof item === 'string'
@@ -28,38 +34,16 @@ export async function tryExtractFromInitialData(page: Page): Promise<InitialData
             : '';
       if (!html) return { slideIndex: idx, text: [], images: [] };
 
-      const tmp = document.createElement('div');
-      tmp.innerHTML = html;
-      tmp.querySelectorAll('script, style').forEach((el) => el.remove());
-
-      const texts: string[] = [];
-      const seen = new Set<string>();
-      const inlineTags = new Set(['span', 'strong', 'em', 'b', 'i', 'u', 'a', 'br', 'abbr', 'code', 'mark', 'sub', 'sup']);
-
-      function walkNodes(el: Element): void {
-        const hasBlockChild = Array.from(el.children).some(
-          (c) => !inlineTags.has(c.tagName.toLowerCase()),
-        );
-        if (!hasBlockChild) {
-          const t = el.textContent?.trim() ?? '';
-          if (t.length > 0 && !seen.has(t)) {
-            seen.add(t);
-            texts.push(t);
-          }
-        } else {
-          Array.from(el.children).forEach((c) => walkNodes(c));
-        }
-      }
-
-      walkNodes(tmp);
+      const doc = parser.parseFromString(html, 'text/html');
+      const texts = [...new Set(h.collectLines(doc.body))];
 
       const images: { src: string; alt: string }[] = [];
       const imgSrcs = new Set<string>();
-      tmp.querySelectorAll('img').forEach((img) => {
+      doc.querySelectorAll('img').forEach((img) => {
         const src = img.getAttribute('src') ?? '';
         if (src && !src.startsWith('data:') && !imgSrcs.has(src)) {
           imgSrcs.add(src);
-          images.push({ src, alt: (img as HTMLImageElement).alt ?? '' });
+          images.push({ src, alt: img.getAttribute('alt') ?? '' });
         }
       });
 
@@ -72,20 +56,13 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
   await page.waitForTimeout(400);
 
   return page.evaluate((): { text: string[]; images: SlideImage[]; title: string | null } => {
+    const h = window.__geniallyScraper;
+    if (!h) throw new Error('genially-scraper page helpers are not installed');
+
     const texts: string[] = [];
     const images: SlideImage[] = [];
 
-    // Find active slide container
-    const candidateContainers = [
-      ...Array.from(document.querySelectorAll('[class*="genially-slide"][class*="active"]')),
-      ...Array.from(document.querySelectorAll('section[class*="active"]')),
-      ...Array.from(document.querySelectorAll('[data-genially-slide-index]')).filter((el) => {
-        const style = window.getComputedStyle(el);
-        return style.display !== 'none' && style.visibility !== 'hidden';
-      }),
-    ];
-
-    const root: Element = candidateContainers[0] ?? document.body;
+    const root = h.findActiveSlideRoot();
 
     // Walk visible elements extracting text
     function walkText(el: Element): void {
@@ -135,9 +112,8 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
     // Filter out CSS/animation code that Genially injects as visible text nodes.
     // These appear as raw CSS strings in <div> elements used for animation markup,
     // not inside <style> tags, so tag-based filtering can't catch them.
-    const CSS_PATTERN = /(?:@keyframes\s|@media\s|\.[\w-]+\s*\{|\w+\s*:\s*\w+[^;]*;[\s\S]*?\}|:hover\s*\{|:focus\s*\{|animation\s*:|transition\s*:|transform\s*:)/;
     const uniqueTexts = [...new Set(
-      texts.filter((t) => t.length > 0 && !CSS_PATTERN.test(t))
+      texts.filter((t) => t.length > 0 && !h.isCssLike(t))
     )];
 
     // Extract title from first heading-like element
@@ -173,55 +149,55 @@ export async function extractSlideData(page: Page): Promise<ExtractedSlideData> 
 // elements that are present in the DOM but visually hidden (opacity 0) until the
 // user clicks a trigger. The text is therefore already available WITHOUT clicking
 // anything — which avoids the modal-blocks-navigation problem entirely. This reads
-// the currently-hidden wrappers (the emergent content); visible ones are left to
-// extractSlideData so the base slide text isn't duplicated.
+// the currently-hidden wrappers (the emergent content) of the active slide; visible
+// ones are left to extractSlideData so the base slide text isn't duplicated.
+const HIDDEN_CANDIDATE_ATTR = 'data-genially-scraper-hidden';
+
 export async function extractHiddenContent(page: Page): Promise<PopupContent[]> {
-  return page.evaluate((): { triggerDescription: string; text: string[]; images: SlideImage[] }[] => {
+  const candidates = await page.evaluate((attr): number => {
+    const h = window.__geniallyScraper;
+    if (!h) throw new Error('genially-scraper page helpers are not installed');
     const CHROME =
       /genially-view-(icon|cursor-pointer|navigation|footer|header|background_audio|toolbar)|StickyBanner/;
 
-    const isHidden = (el: Element): boolean => {
-      const cs = window.getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden') return true;
-      if (parseFloat(cs.opacity || '1') <= 0.05) return true;
-      const m = cs.transform.match(/matrix\(([^)]+)\)/);
-      if (m) {
-        const parts = m[1].split(',').map((n) => parseFloat(n));
-        // matrix(a,b,c,d,e,f): scaleX≈a, scaleY≈d — scaled to ~0 means hidden
-        if (Math.abs(parts[0]) < 0.05 && Math.abs(parts[3]) < 0.05) return true;
-      }
-      return false;
-    };
+    document.querySelectorAll(`[${attr}]`).forEach((el) => el.removeAttribute(attr));
 
-    // Same filter extractSlideData uses: styled-components inject <style> blocks
-    // inside these wrappers, and textContent would otherwise leak raw CSS.
-    const CSS_PATTERN =
-      /(?:@keyframes\s|@media\s|\.[\w-]+\s*\{|\w+\s*:\s*\w+[^;]*;[\s\S]*?\}|:hover\s*\{|:focus\s*\{|animation\s*:|transition\s*:|transform\s*:)/;
-
-    const popups: { triggerDescription: string; text: string[]; images: SlideImage[] }[] = [];
-    const seen = new Set<string>();
-
-    document.querySelectorAll('.genially-animated-wrapper').forEach((w) => {
+    let count = 0;
+    h.findActiveSlideRoot().querySelectorAll('.genially-animated-wrapper').forEach((w) => {
       const cls = w.className ? w.className.toString() : '';
       if (CHROME.test(cls)) return;
 
       // Emergent = the wrapper (or its content item) is currently hidden
       const inner = w.querySelector('.genially-view-text, .genially-view-item');
-      const hidden = isHidden(w) || (inner !== null && isHidden(inner));
-      if (!hidden) return;
+      if (h.isHidden(w) || (inner !== null && h.isHidden(inner))) {
+        w.setAttribute(attr, '');
+        count++;
+      }
+    });
+    return count;
+  }, HIDDEN_CANDIDATE_ATTR);
 
-      // Clone and strip <script>/<style> so styled-components CSS doesn't leak in
-      const clone = w.cloneNode(true) as HTMLElement;
-      clone.querySelectorAll('script, style').forEach((el) => el.remove());
-      const raw = clone.textContent ?? '';
-      const lines = [
-        ...new Set(
-          raw
-            .split('\n')
-            .map((s) => s.trim())
-            .filter((s) => s.length > 1 && !CSS_PATTERN.test(s)),
-        ),
-      ];
+  if (candidates === 0) return [];
+
+  // Entrance animations also start at opacity 0; only wrappers still hidden once
+  // those have had time to play are emergent content
+  await page.waitForTimeout(600);
+
+  return page.evaluate((attr): { triggerDescription: string; text: string[]; images: SlideImage[] }[] => {
+    const h = window.__geniallyScraper;
+    if (!h) throw new Error('genially-scraper page helpers are not installed');
+
+    const popups: { triggerDescription: string; text: string[]; images: SlideImage[] }[] = [];
+    const seen = new Set<string>();
+
+    document.querySelectorAll(`[${attr}]`).forEach((w) => {
+      w.removeAttribute(attr);
+      const inner = w.querySelector('.genially-view-text, .genially-view-item');
+      if (!h.isHidden(w) && !(inner !== null && h.isHidden(inner))) return;
+
+      // collectLines skips <script>/<style>, so styled-components CSS doesn't leak in;
+      // the CSS filter then runs per line, so one stray rule can't drop the popup
+      const lines = [...new Set(h.collectLines(w).filter((s) => s.length > 1 && !h.isCssLike(s)))];
       if (lines.length === 0) return;
 
       const key = lines.join('|');
@@ -242,5 +218,5 @@ export async function extractHiddenContent(page: Page): Promise<PopupContent[]> 
     });
 
     return popups;
-  });
+  }, HIDDEN_CANDIDATE_ATTR);
 }

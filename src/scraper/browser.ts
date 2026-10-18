@@ -1,4 +1,5 @@
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { installPageHelpers } from './pageHelpers.js';
 
 export async function launchBrowser(headless = true): Promise<Browser> {
   return chromium.launch({
@@ -19,6 +20,7 @@ export async function createPage(browser: Browser): Promise<{ context: BrowserCo
     javaScriptEnabled: true,
     ignoreHTTPSErrors: true,
   });
+  await installPageHelpers(context);
   await context.route('**/*.{mp4,webm,ogg,avi,mov}', (route) => route.abort());
   const page = await context.newPage();
   return { context, page };

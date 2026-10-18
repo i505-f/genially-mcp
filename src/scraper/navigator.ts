@@ -23,7 +23,6 @@ export async function getSlideCount(page: Page): Promise<number> {
       '[class*="slide-indicator"] span',
       '[class*="nav-dots"] button',
       '[class*="pagination"] button',
-      '[class*="bullet"]',
     ];
     for (const sel of dotSelectors) {
       const items = document.querySelectorAll(sel);
@@ -38,47 +37,42 @@ export async function getSlideCount(page: Page): Promise<number> {
       const items = document.querySelectorAll(sel);
       if (items.length > 0) return items.length;
     }
-    // Fallback: parse "X of N" / "X de N" / "X / N" text visible on the page
-    // (e.g. Genially shows "Page 3 of 26" in the slide footer)
-    const bodyText = document.body.innerText ?? '';
-    const m = bodyText.match(/\b\d+\s*(?:of|de|\/)\s*(\d+)\b/i);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (n > 1) return n;
-    }
     return 0;
   });
-  return Math.max(count, 1);
+  if (count > 0) return count;
+  // Fallback: the page counter (e.g. Genially shows "Page 3 of 26" in the slide footer)
+  const { total } = await getPageInfo(page).catch(() => ({ total: null as number | null }));
+  return Math.max(total ?? 0, 1);
 }
 
-export async function getCurrentSlideIndex(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    const activeSelectors = [
-      '[class*="dot"][class*="active"]',
-      '[class*="dot"][class*="current"]',
-      '[class*="bullet"][class*="active"]',
-      '[class*="slide-indicator"] [class*="active"]',
-    ];
-    for (const sel of activeSelectors) {
-      const active = document.querySelector(sel);
-      if (active?.parentElement) {
-        return Array.from(active.parentElement.children).indexOf(active);
-      }
-    }
-    return 0;
-  });
-}
-
+// Reads the slide footer counter. Slide content often contains "N/M"-shaped text
+// (school years, fractions, dates), so only the explicit "Page N of M" form or an
+// element whose entire text is "N of M" / "N / M" counts.
 export async function getPageInfo(page: Page): Promise<{ current: number | null; total: number | null }> {
   return page.evaluate(() => {
+    const valid = (current: number, total: number): boolean => current >= 1 && total >= current && total <= 500;
+
     const bodyText = document.body.innerText ?? '';
-    const m = bodyText.match(/\b(\d+)\s*(?:of|de|\/)\s*(\d+)\b/i);
-    if (m) {
+    for (const m of bodyText.matchAll(/\b(?:page|p[áa]gina)\s+(\d+)\s+(?:of|de)\s+(\d+)\b/gi)) {
       const current = parseInt(m[1], 10);
       const total = parseInt(m[2], 10);
-      if (total >= current && total > 0) return { current, total };
+      if (valid(current, total)) return { current, total };
     }
-    return { current: null, total: null };
+
+    // Document order puts descendants after ancestors, so the last match is the
+    // innermost element of a wrapper chain and, usually, the footer counter
+    const COUNTER = /^(\d+)\s*(?:of|de|\/)\s*(\d+)$/i;
+    let found: { current: number; total: number } | null = null;
+    for (const el of Array.from(document.body.querySelectorAll('*'))) {
+      const text = el.textContent?.trim() ?? '';
+      if (text.length === 0 || text.length > 24) continue;
+      const m = text.match(COUNTER);
+      if (!m || !el.checkVisibility()) continue;
+      const current = parseInt(m[1], 10);
+      const total = parseInt(m[2], 10);
+      if (valid(current, total)) found = { current, total };
+    }
+    return found ?? { current: null, total: null };
   });
 }
 
@@ -209,24 +203,4 @@ export async function navigateToNextSlide(page: Page): Promise<boolean> {
   await page.waitForTimeout(1200);
   const fingerprintAfter = await getSlideTextFingerprint(page);
   return fingerprintAfter !== fingerprintBefore;
-}
-
-export async function navigateToSlideByIndex(page: Page, index: number): Promise<void> {
-  await page.evaluate((idx) => {
-    const dotSelectors = [
-      '[class*="navigation-bar"] [class*="dot"]',
-      '[class*="navigation-bar"] li',
-      '[class*="nav-dots"] button',
-      '[class*="pagination"] button',
-      '[class*="bullet"]',
-    ];
-    for (const sel of dotSelectors) {
-      const dots = document.querySelectorAll(sel);
-      if (dots.length > idx) {
-        (dots[idx] as HTMLElement).click();
-        return;
-      }
-    }
-  }, index);
-  await page.waitForTimeout(1000);
 }
